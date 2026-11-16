@@ -70,6 +70,9 @@ for o in list(bpy.context.scene.objects):
 # Buang potongan lepas yang kecil (mis. ujung ekor melayang) agar tidak merusak deteksi & bobot.
 bm = bmesh.new()
 bm.from_mesh(body.data)
+# Mesh bertekstur punya vertex terpecah di sambungan UV; satukan lagi agar topologi utuh
+# (UV disimpan per sudut face, jadi tekstur tidak berubah). Tanpa ini skinning & deteksi potongan kacau.
+bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-6)
 bm.verts.ensure_lookup_table()
 seen, islands = set(), []
 for v in bm.verts:
@@ -104,8 +107,9 @@ body.data.update()
 V = np.array([v.co[:] for v in body.data.vertices])
 H = HEIGHT
 
-# Material yang menampilkan vertex color (TripoSR menyimpan warna per vertex).
-if body.data.color_attributes:
+# Material: pertahankan material bertekstur hasil impor; kalau tidak ada, tampilkan vertex color.
+TEXTURED = any(n.type == "TEX_IMAGE" for m in body.data.materials if m and m.node_tree for n in m.node_tree.nodes)
+if not TEXTURED and body.data.color_attributes:
     mat = bpy.data.materials.new("BodyMat")
     mat.use_nodes = True
     nt = mat.node_tree
@@ -241,7 +245,7 @@ if MODE == "prepare":
     scene = bpy.context.scene
     scene.render.engine = "BLENDER_WORKBENCH"
     sh = scene.display.shading
-    sh.light, sh.color_type, sh.show_cavity = "STUDIO", "VERTEX", True
+    sh.light, sh.color_type, sh.show_cavity = "STUDIO", ("TEXTURE" if TEXTURED else "VERTEX"), True
     scene.world = bpy.data.worlds.new("w")
     scene.world.color = (0.12, 0.12, 0.14)
     scene.render.resolution_x = scene.render.resolution_y = FRAME_PX
@@ -592,7 +596,7 @@ bpy.ops.export_scene.gltf(
     export_format="GLB",
     export_animations=True,
     export_animation_mode="ACTIONS",
-    export_vertex_color="ACTIVE",
+    export_vertex_color="NONE" if TEXTURED else "ACTIVE",
     export_skins=True,
     export_force_sampling=True,
     export_optimize_animation_size=True,
@@ -605,6 +609,7 @@ try:
         bake_anim_use_all_actions=True,
         bake_anim_use_nla_strips=False,
         path_mode="COPY",
+        embed_textures=True,
     )
 except Exception as e:  # FBX opsional
     warn(f"Ekspor FBX gagal: {e}")

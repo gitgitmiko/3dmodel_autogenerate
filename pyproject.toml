@@ -14,6 +14,7 @@ dependencies = [
   "trimesh>=4.4",
   "PyMCubes>=0.1.6",
   "fast-simplification>=0.1.7",
+  "xatlas>=0.0.9",
   "rembg[cpu]>=2.0.57",
   "onnxruntime>=1.18",
   "Pillow>=10",

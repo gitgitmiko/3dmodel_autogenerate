@@ -1,4 +1,4 @@
-"""Render pratinjau GLB dengan Workbench (warna dari vertex color).
+"""Render pratinjau GLB dengan Workbench (warna dari tekstur, atau vertex color bila tanpa tekstur).
 
 Pakai: blender -b --factory-startup -P render_preview.py -- model.glb out.png [--views front,side,34]
        [--anim walk --frame 8] [--joints] [--size 512]
@@ -66,7 +66,8 @@ if rig and args.joints:
 scene.render.engine = "BLENDER_WORKBENCH"
 shading = scene.display.shading
 shading.light = "STUDIO"
-shading.color_type = "VERTEX"
+textured = any(n.type == "TEX_IMAGE" for m in bpy.data.materials if m.node_tree for n in m.node_tree.nodes)
+shading.color_type = "TEXTURE" if textured else "VERTEX"
 shading.show_cavity = True
 if args.joints:
     shading.show_xray = True

@@ -42,6 +42,8 @@ class ImageTo3DOptions:
     foreground_ratio: float = 0.85
     smooth_iters: int = 5          # Taubin smoothing, 0 = mati
     height_m: float = 1.0          # tinggi akhir model (meter); rigging menskalakan ulang sendiri
+    texture_res: int = 1024        # 0 = vertex color saja; 1024/2048 = bake tekstur UV
+    project_image: bool = True     # tempel gambar asli ke sisi depan tekstur (lebih tajam)
 
 
 _model = None
@@ -158,6 +160,7 @@ def image_to_3d(
     out_dir.mkdir(parents=True, exist_ok=True)
     report = progress or (lambda p, m: None)
     t0 = time.time()
+    tex_info: dict = {}
 
     with _lock:  # satu inferensi per proses; CPU tidak sanggup paralel
         report(0.05, "Memuat model")
@@ -171,16 +174,29 @@ def image_to_3d(
         with torch.no_grad():
             scene_codes = model([model_input], device="cpu")
 
-        report(0.60, f"Mengekstrak mesh ({opts.resolution}³)")
+        report(0.55, f"Mengekstrak mesh ({opts.resolution}³)")
         with torch.no_grad():
             mesh = model.extract_mesh(scene_codes, True, resolution=opts.resolution)[0]
 
-    report(0.80, "Membersihkan & menghaluskan mesh")
-    raw_faces = len(mesh.faces)
-    mesh = _clean(mesh, opts)
+        report(0.72, "Membersihkan & menghaluskan mesh")
+        raw_faces = len(mesh.faces)
+        mesh = _clean(mesh, opts)
+
+        if opts.texture_res > 0:
+            report(0.80, f"Bake tekstur {opts.texture_res}px")
+            from engine.texture import bake_texture
+
+            mesh, tex_info = bake_texture(mesh, model, scene_codes[0], opts.texture_res,
+                                          image_rgba=cutout if opts.project_image else None)
+        else:
+            # glTF menganggap COLOR_0 linear, sedangkan keluaran TripoSR sRGB -> konversi agar tidak pucat.
+            c = np.asarray(mesh.visual.vertex_colors).astype(np.float32) / 255.0
+            c[:, :3] = np.where(c[:, :3] <= 0.04045, c[:, :3] / 12.92, ((c[:, :3] + 0.055) / 1.055) ** 2.4)
+            mesh.visual = trimesh.visual.ColorVisuals(mesh, vertex_colors=(c * 255).round().astype(np.uint8))
+
     mesh = _orient_and_normalize(mesh, opts.height_m)
 
-    report(0.92, "Ekspor GLB")
+    report(0.94, "Ekspor GLB")
     glb = out_dir / "model.glb"
     mesh.export(glb)
 
@@ -188,6 +204,8 @@ def image_to_3d(
         "vertices": int(len(mesh.vertices)),
         "faces": int(len(mesh.faces)),
         "raw_faces": int(raw_faces),
+        "texture": int(opts.texture_res),
+        "texture_projected": bool(tex_info.get("projected")),
         "seconds": round(time.time() - t0, 1),
         "bounds": mesh.bounds.round(4).tolist(),
     }

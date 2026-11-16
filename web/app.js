@@ -234,6 +234,7 @@ function renderModelTab() {
       <dt>Vertex</dt><dd>${(s.vertices || 0).toLocaleString("id-ID")}</dd>
       <dt>Face</dt><dd>${(s.faces || 0).toLocaleString("id-ID")}</dd>
       <dt>Resolusi</dt><dd>${a.params.resolution}³</dd>
+      <dt>Tekstur</dt><dd>${s.texture ? `${s.texture}px${s.texture_projected ? " + gambar asli" : ""}` : "vertex color"}</dd>
       <dt>Waktu proses</dt><dd>${s.seconds ?? "—"} dtk</dd></dl></div>` : "";
   const rigCta = a.status === "ready" ? `<div class="card"><h3>Karakter humanoid?</h3>
       <p class="muted small">Buat kerangka (rig) otomatis + animasi jalan, lari, lompat, melambai, idle.</p>

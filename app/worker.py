@@ -53,6 +53,7 @@ def run_image_to_3d(job: dict):
         remove_bg=bool(p.get("remove_bg", True)),
         foreground_ratio=float(p.get("foreground_ratio", 0.85)),
         smooth_iters=int(p.get("smooth_iters", 5)),
+        texture_res=int(p.get("texture_res", 1024)),
     )
     store.update_asset(aid, status="processing")
 
@@ -67,8 +68,16 @@ def run_image_to_3d(job: dict):
     import trimesh
 
     mesh = trimesh.load(d / "model.glb", force="mesh")
-    mesh.export(d / "model.obj")
     mesh.export(d / "model.stl")
+    # OBJ bertekstur terdiri dari beberapa file (obj + mtl + png) -> dikemas jadi satu zip.
+    import tempfile
+    import zipfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mesh.export(Path(tmp) / "model.obj")
+        with zipfile.ZipFile(d / "model-obj.zip", "w", zipfile.ZIP_DEFLATED) as z:
+            for f in sorted(Path(tmp).iterdir()):
+                z.write(f, f.name)
 
     store.update_job(job["id"], progress=0.96, message="Membuat thumbnail")
     try:

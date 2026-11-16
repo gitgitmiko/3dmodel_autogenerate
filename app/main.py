@@ -27,6 +27,16 @@ COOKIE = "g3d_session"
 MARKER_KEYS = ["chin", "groin", "elbow_l", "elbow_r", "wrist_l", "wrist_r", "knee_l", "knee_r"]
 
 
+@app.middleware("http")
+async def _no_stale_ui(request: Request, call_next):
+    """Cloudflare meng-cache .js/.css berdasarkan ekstensi; paksa revalidasi agar update UI langsung terlihat."""
+    resp = await call_next(request)
+    path = request.url.path
+    if not path.startswith("/vendor/") and "cache-control" not in resp.headers:
+        resp.headers["Cache-Control"] = "no-cache, max-age=0, must-revalidate"
+    return resp
+
+
 @app.on_event("startup")
 def _startup():
     if not APP_PASSWORD:
@@ -90,7 +100,7 @@ def me(request: Request):
 
 # ------------------------------------------------------------------ aset
 FILE_LABELS = {
-    "model.glb": "Model (GLB)", "model.obj": "Model (OBJ)", "model.stl": "Model (STL, cetak 3D)",
+    "model.glb": "Model (GLB)", "model-obj.zip": "Model (OBJ + tekstur, zip)", "model.stl": "Model (STL, cetak 3D)",
     "rig/rigged.glb": "Rig + animasi (GLB)", "rig/rigged.fbx": "Rig + animasi (FBX, Unity/Unreal)",
 }
 
@@ -98,7 +108,7 @@ FILE_LABELS = {
 def asset_view(a: dict, with_jobs=False) -> dict:
     d = worker.asset_dir(a["id"])
     files = {k: f"files/{a['id']}/{k}" for k in
-             ["input.png", "input.jpg", "input.webp", "cutout.png", "thumb.png", "model.glb", "model.obj",
+             ["input.png", "input.jpg", "input.webp", "cutout.png", "thumb.png", "model.glb", "model-obj.zip",
               "model.stl", "rig/front.png", "rig/thumb.png", "rig/rigged.glb", "rig/rigged.fbx"]
              if (d / k).exists()}
     a = {**a, "files": files,
@@ -131,6 +141,7 @@ async def create_asset(
     resolution: int = Form(256),
     target_faces: int = Form(60000),
     remove_bg: bool = Form(True),
+    texture_res: int = Form(1024),
     auto_rig: bool = Form(False),
 ):
     raw = await image.read(MAX_UPLOAD_MB * 1024 * 1024 + 1)
@@ -145,8 +156,10 @@ async def create_asset(
         raise HTTPException(400, "Gambar terlalu kecil")
     resolution = max(128, min(320, resolution))
     target_faces = 0 if target_faces <= 0 else max(5000, min(200000, target_faces))
+    texture_res = texture_res if texture_res in (0, 1024, 2048) else 1024
     name = (name or Path(image.filename or "model").stem).strip()[:60] or "model"
-    params = {"resolution": resolution, "target_faces": target_faces, "remove_bg": remove_bg, "auto_rig": auto_rig}
+    params = {"resolution": resolution, "target_faces": target_faces, "remove_bg": remove_bg,
+              "texture_res": texture_res, "auto_rig": auto_rig}
     a = store.create_asset(name, params)
     d = worker.asset_dir(a["id"])
     d.mkdir(parents=True, exist_ok=True)

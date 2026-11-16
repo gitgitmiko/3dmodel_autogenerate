@@ -5,7 +5,8 @@ Live: **https://3d.gitgitmiko.my.id** (login password).
 
 Tahap 1 (sudah jalan):
 
-- **Image → 3D**: satu gambar menjadi model 3D berwarna (GLB / OBJ / STL).
+- **Image → 3D**: satu gambar menjadi model 3D (GLB / OBJ / STL).
+- **Texture bake**: UV atlas + tekstur 1K/2K; sisi depan memakai gambar asli sehingga detailnya tajam.
 - **Auto-rig humanoid + animasi dasar**: kerangka 22 tulang (nama standar Mixamo), skinning otomatis,
   animasi *idle, walk, run, wave, jump*, diekspor ke GLB dan FBX (Unity/Unreal/Godot/Blender).
 
@@ -13,7 +14,8 @@ Tahap 1 (sudah jalan):
 
 ```
 gambar ──rembg──► potong background ──TripoSR (CPU)──► triplane NeRF ──marching cubes──► mesh
-      ──bersihkan + Taubin smoothing + decimation──► model.glb (+ OBJ, STL, thumbnail)
+      ──bersihkan + Taubin smoothing + decimation──► UV unwrap (xatlas)
+      ──bake tekstur: warna NeRF per texel + proyeksi gambar asli──► model.glb (+ OBJ zip, STL, thumbnail)
 
 model.glb ──Blender headless (autorig.py prepare)──► tebakan 8 penanda sendi + gambar tampak depan
           ──pengguna cek/geser penanda di UI──► (autorig.py rig) kerangka + bone heat skinning
@@ -28,8 +30,22 @@ model.glb ──Blender headless (autorig.py prepare)──► tebakan 8 penanda
 | API & antrean | FastAPI + SQLite, satu worker (satu job per waktu) |
 | UI | HTML/JS polos + `<model-viewer>` (di-vendor) |
 
-Performa di i5-1135G7 (4 core, tanpa GPU): image→3D ±55–75 detik, RAM puncak ±3,8 GB;
+Performa di i5-1135G7 (4 core, tanpa GPU): image→3D + tekstur 2K ±55–75 detik, RAM puncak ±3,8 GB;
 rigging + 5 animasi ±3–5 detik. Model TripoSR dilepas dari RAM setelah 15 menit menganggur.
+
+### Texture bake (`engine/texture.py`)
+
+1. Mesh akhir di-unwrap dengan xatlas (±4–12 detik untuk 60 ribu face).
+2. Segitiga dirasterisasi di ruang UV untuk mendapat posisi 3D setiap texel, lalu warnanya ditanyakan
+   langsung ke medan warna TripoSR (jauh lebih rapat daripada vertex color).
+3. **Proyeksi gambar asli**: kamera input TripoSR diketahui (sumbu +X, jarak 1,9, FOV 40°), jadi texel
+   yang menghadap kamera dan tidak terhalang (uji depth buffer) diganti warna dari gambar asli resolusi
+   penuh, dengan transisi halus ke warna NeRF di sisi samping/belakang. Dilewati otomatis bila siluet
+   mesh tidak cocok dengan gambar (IoU < 0,6).
+4. Texel kosong diisi warna tetangga terdekat agar tidak ada garis di sambungan UV.
+
+Sisi belakang/samping tetap buram karena hanya ada satu gambar — itu batas pendekatan satu-gambar.
+Tanpa tekstur (opsi "Vertex color"), warna vertex dikonversi sRGB→linear agar tidak pucat di glTF.
 
 ### Rigging: kenapa ada penanda?
 
@@ -40,6 +56,7 @@ sering punya aksesori (ekor, senjata, jubah) yang mengecoh. Karena itu pengguna 
 dihitung otomatis dari penampang mesh.
 
 Perlakuan khusus mesh hasil AI:
+- vertex yang terpecah di sambungan UV disatukan lagi (UV tetap utuh karena disimpan per sudut face);
 - potongan kecil yang melayang dibuang;
 - kaki/paha yang menempel dipotong di garis tengah (di bawah selangkangan) lalu lubangnya ditutup,
   supaya kaki bisa melangkah tanpa mesh "tertarik";
@@ -61,6 +78,9 @@ Produksi di server ini: `systemctl --user {status,restart} gitgit3d` (unit: `dep
 Nice=10 & MemoryMax=8G agar CCTV/Frigate tidak terganggu), dipublikasikan lewat Cloudflare Tunnel
 (`~/.cloudflared/config.yml`, host `3d.gitgitmiko.my.id` → `127.0.0.1:8800`).
 
+Catatan: Cloudflare meng-cache `.js/.css` di edge. Setelah mengubah `web/app.js` atau `web/style.css`,
+naikkan angka `?v=` di `web/index.html`.
+
 Uji cepat tanpa UI:
 
 ```bash
@@ -78,7 +98,7 @@ Semua endpoint (kecuali login) butuh cookie sesi.
 | --- | --- | --- |
 | POST | `/api/login` `{password}` | masuk |
 | GET | `/api/assets` | daftar aset |
-| POST | `/api/assets` (multipart: `image`, `name`, `resolution` 128–320, `target_faces`, `remove_bg`, `auto_rig`) | buat model dari gambar |
+| POST | `/api/assets` (multipart: `image`, `name`, `resolution` 128–320, `target_faces`, `texture_res` 0/1024/2048, `remove_bg`, `auto_rig`) | buat model dari gambar |
 | GET/PATCH/DELETE | `/api/assets/{id}` | detail (+ job, penanda) / ganti nama / hapus |
 | POST | `/api/assets/{id}/rig/prepare` `{height}` | tebak penanda + render tampak depan |
 | POST | `/api/assets/{id}/rig` `{markers, height, animations}` | buat rig + animasi |
@@ -87,7 +107,8 @@ Semua endpoint (kecuali login) butuh cookie sesi.
 
 ## Roadmap (fitur Meshy lain)
 
-- [ ] **Texture bake** (UV atlas + tekstur PBR alih-alih vertex color) — xatlas + bake di Blender.
+- [x] **Texture bake** (UV atlas + tekstur dari medan warna + proyeksi gambar asli).
+- [ ] Peta normal/roughness (PBR penuh) dan perbaikan sisi belakang tekstur.
 - [ ] **Multi-view image → 3D** (depan/samping/belakang) untuk geometri lebih akurat.
 - [ ] **Text → 3D**: text → gambar (model difusi ringan / API eksternal) → pipeline image→3D.
 - [ ] **AI texturing / retexture** untuk mesh yang sudah ada (butuh GPU agar praktis).
