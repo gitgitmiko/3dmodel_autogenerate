@@ -12,6 +12,17 @@ const MARKERS = [
   { k: "wrist_r", label: "Pergelangan kanan", color: "#2fbf6a" },
   { k: "knee_r", label: "Lutut kanan", color: "#ff5ca8" },
 ];
+const QUAD_MARKERS = [
+  { k: "head", label: "Kepala", color: "#ffd84a" },
+  { k: "withers", label: "Pundak", color: "#4ad6ff" },
+  { k: "hips", label: "Pinggul", color: "#ff8a3d" },
+  { k: "tail_tip", label: "Ujung ekor", color: "#ff5ca8" },
+  { k: "front_foot", label: "Telapak depan", color: "#5dff9d" },
+  { k: "back_foot", label: "Telapak belakang", color: "#7c5cff" },
+];
+const QUAD_ANIMS = ["idle", "walk", "run", "jump"];
+const isQuad = (a) => (a.rig_prep?.rig_type || "humanoid") === "quadruped";
+const markerDefs = (a) => (isQuad(a) ? QUAD_MARKERS : MARKERS);
 const MIRROR = { elbow_l: "elbow_r", elbow_r: "elbow_l", wrist_l: "wrist_r", wrist_r: "wrist_l", knee_l: "knee_r", knee_r: "knee_l" };
 const ANIM_LABEL = { idle: "Diam (idle)", walk: "Jalan", run: "Lari", wave: "Melambai", jump: "Lompat", dance: "Joget", attack: "Menyerang", sit: "Duduk", cheer: "Sorak" };
 const VIEWS = [
@@ -422,13 +433,29 @@ function renderRigTab() {
   body.innerHTML = `<div class="card" style="max-width:640px">
     <h3>Rigging otomatis</h3>
     <p class="muted">Langkah 1: sistem menebak posisi sendi dari bentuk model. Langkah 2: kamu cek & geser penandanya (dagu, siku, pergelangan, lutut, selangkangan) lalu rig + animasi dibuat.</p>
-    <p class="muted small">Cocok untuk karakter humanoid berdiri tegak dengan lengan sedikit terbuka. Hewan berkaki empat / objek belum didukung.</p>
-    <label class="field" style="max-width:220px">Tinggi karakter (meter)<input type="number" id="height" value="1.75" min="0.2" max="10" step="0.05"></label>
+    <div class="field" style="max-width:360px">Jenis<div class="seg" id="rigType">
+      <button type="button" data-v="humanoid" class="${a.params.kind === "animal" ? "" : "on"}">Humanoid</button>
+      <button type="button" data-v="quadruped" class="${a.params.kind === "animal" ? "on" : ""}">Hewan berkaki empat</button></div></div>
+    <p class="muted small" id="rigTypeHint"></p>
+    <label class="field" style="max-width:220px">Tinggi (meter)<input type="number" id="height" value="${a.params.kind === "animal" ? 0.6 : 1.75}" min="0.05" max="10" step="0.05"></label>
     <p></p><button class="btn primary" id="prepBtn">Tebak posisi sendi</button> ${err}</div>`;
+  const hint = () => {
+    const q = $("#rigType button.on").dataset.v === "quadruped";
+    $("#rigTypeHint").textContent = q
+      ? "Untuk hewan yang modelnya dibuat dari tampak SAMPING (profil). Animasi: idle, jalan, lari, lompat."
+      : "Untuk karakter berdiri tegak dengan lengan sedikit terbuka. Animasi: 9 gerakan + impor Mixamo/BVH.";
+  };
+  hint();
+  $("#rigType").addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    $("#rigType").querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
+    $("#height").value = b.dataset.v === "quadruped" ? 0.6 : 1.75;
+    hint();
+  });
   $("#prepBtn").addEventListener("click", async () => {
     $("#prepBtn").disabled = true;
     try {
-      await api(`api/assets/${a.id}/rig/prepare`, { method: "POST", body: JSON.stringify({ height: +$("#height").value || 1.75 }) });
+      await api(`api/assets/${a.id}/rig/prepare`, { method: "POST", body: JSON.stringify({ height: +$("#height").value || 1.75, rig_type: $("#rigType button.on").dataset.v }) });
       openAsset(a.id);
     } catch (err) { alert(err.message); $("#prepBtn").disabled = false; }
   });
@@ -437,37 +464,41 @@ function renderRigTab() {
 function renderMarkerEditor(errJob) {
   const a = state.current, body = $("#tabBody"), prep = a.rig_prep;
   if (!state.markers) state.markers = structuredClone(a.rig_markers || prep.markers);
-  const anims = Object.keys(ANIM_LABEL);
+  const quad = isQuad(a);
+  const anims = quad ? QUAD_ANIMS : Object.keys(ANIM_LABEL);
   const chosen = new Set(a.rig_report?.animations?.map((x) => x.name) || anims);
+  const defs = markerDefs(a);
+  if (defs.some((m) => !state.markers[m.k])) state.markers = structuredClone(prep.markers); // jenis rig berganti
   body.innerHTML = `<div class="view-grid">
     <div><div class="marker-wrap" id="mw"><img src="${a.files["rig/front.png"]}?v=${Date.now()}" alt="Tampak depan"><svg id="mkSvg"></svg></div></div>
     <div class="side-col">
       ${errJob ? `<div class="err-box">${esc(errJob.message)}</div>` : ""}
       ${warningsHTML(prep.warnings)}
       <div class="card"><h3>Atur penanda sendi</h3>
-        <p class="muted small">Geser titik ke posisi yang benar pada model. Ini tampak <b>depan</b>: sisi kiri karakter ada di kanan layar.</p>
-        <div class="legend">${MARKERS.map((m) => `<span><i style="background:${m.color}"></i>${m.label}</span>`).join("")}</div>
-        <p></p><label class="check"><input type="checkbox" id="sym" ${state.symmetric ? "checked" : ""}> Simetris (geser satu sisi, sisi lain ikut)</label>
+        <p class="muted small">${quad ? "Geser titik ke posisi yang benar. Hewan terlihat dari samping; taruh <b>Ujung ekor</b> di pinggul bila tanpa ekor." : "Geser titik ke posisi yang benar pada model. Ini tampak <b>depan</b>: sisi kiri karakter ada di kanan layar."}</p>
+        <div class="legend">${defs.map((m) => `<span><i style="background:${m.color}"></i>${m.label}</span>`).join("")}</div>
+        ${quad ? "" : `<p></p><label class="check"><input type="checkbox" id="sym" ${state.symmetric ? "checked" : ""}> Simetris (geser satu sisi, sisi lain ikut)</label>`}
         <p></p><button class="btn sm" id="resetMk">Kembalikan tebakan otomatis</button>
       </div>
       <div class="card"><h3>Animasi</h3><div class="anim-grid">${anims.map((n) =>
         `<label class="check"><input type="checkbox" class="anim" value="${n}" ${chosen.has(n) ? "checked" : ""}> ${ANIM_LABEL[n]}</label>`).join("")}</div>
         <p></p><label class="field">Tinggi karakter (meter)<input type="number" id="height" value="${prep.height_m || 1.75}" min="0.2" max="10" step="0.05"></label>
       </div>
-      ${customAnimCardHTML(a)}
+      ${quad ? "" : customAnimCardHTML(a)}
       <button class="btn primary wide" id="rigBtn">Buat rig + animasi</button>
       ${a.rig_status === "rigged" ? '<button class="btn ghost wide" id="backRig">← Kembali ke hasil rig</button>' : ""}
     </div></div>`;
   drawMarkers();
   wireCustomAnims(a);
-  $("#sym").addEventListener("change", (e) => { state.symmetric = e.target.checked; });
+  $("#sym")?.addEventListener("change", (e) => { state.symmetric = e.target.checked; });
   $("#resetMk").addEventListener("click", () => { state.markers = structuredClone(prep.markers); drawMarkers(); });
   $("#backRig")?.addEventListener("click", () => { state.editMarkers = false; renderTab(); });
   $("#rigBtn").addEventListener("click", async () => {
     $("#rigBtn").disabled = true;
     const animations = [...document.querySelectorAll(".anim:checked")].map((x) => x.value);
     try {
-      await api(`api/assets/${a.id}/rig`, { method: "POST", body: JSON.stringify({ markers: state.markers, animations, height: +$("#height").value || 1.75 }) });
+      const markers = Object.fromEntries(defs.map((m) => [m.k, state.markers[m.k]]));
+      await api(`api/assets/${a.id}/rig`, { method: "POST", body: JSON.stringify({ markers, animations, height: +$("#height").value || 1.75, rig_type: quad ? "quadruped" : "humanoid" }) });
       state.editMarkers = false;
       openAsset(a.id);
     } catch (err) { alert(err.message); $("#rigBtn").disabled = false; }
@@ -481,8 +512,11 @@ function drawMarkers() {
   const toWorld = (u, v) => [+(f.cx + (u / 1000 - 0.5) * f.size).toFixed(4), +(f.cz + (0.5 - v / 1000) * f.size).toFixed(4)];
   const bone = (a, b) => { const [x1, y1] = toPx(state.markers[a]), [x2, y2] = toPx(state.markers[b]);
     return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#fff" stroke-opacity=".5" stroke-width="3" stroke-dasharray="6 6"/>`; };
-  svg.innerHTML = [["chin", "groin"], ["elbow_l", "wrist_l"], ["elbow_r", "wrist_r"], ["groin", "knee_l"], ["groin", "knee_r"]].map(([a, b]) => bone(a, b)).join("") +
-    MARKERS.map((m) => {
+  const cur = state.current, quad = isQuad(cur);
+  const lines = quad ? [["hips", "withers"], ["withers", "head"], ["hips", "tail_tip"], ["withers", "front_foot"], ["hips", "back_foot"]]
+    : [["chin", "groin"], ["elbow_l", "wrist_l"], ["elbow_r", "wrist_r"], ["groin", "knee_l"], ["groin", "knee_r"]];
+  svg.innerHTML = lines.map(([p, q]) => bone(p, q)).join("") +
+    markerDefs(cur).map((m) => {
       const [u, v] = toPx(state.markers[m.k]);
       const left = u > 600;
       return `<g class="mk" data-k="${m.k}" transform="translate(${u} ${v})"><circle class="hit" r="26"/><circle class="dot" r="11" fill="${m.color}"/>
@@ -497,9 +531,10 @@ function drawMarkers() {
       const u = Math.min(1000, Math.max(0, ((ev.clientX - r.left) / r.width) * 1000));
       const v = Math.min(1000, Math.max(0, ((ev.clientY - r.top) / r.height) * 1000));
       let [x, z] = toWorld(u, v);
-      if (k === "chin" || k === "groin") x = 0; // titik tengah selalu di sumbu tengah
+      if (!quad && (k === "chin" || k === "groin")) x = 0; // titik tengah selalu di sumbu tengah
+      if (quad && (k === "front_foot" || k === "back_foot")) z = 0; // telapak di lantai
       state.markers[k] = [x, z];
-      if (state.symmetric && MIRROR[k]) state.markers[MIRROR[k]] = [-x, z];
+      if (!quad && state.symmetric && MIRROR[k]) state.markers[MIRROR[k]] = [-x, z];
       drawMarkers();
     };
     const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); drawMarkers(); };
@@ -519,11 +554,11 @@ function renderRigged(job) {
     <div class="side-col">
       ${warningsHTML(rep.warnings)}
       <div class="card"><h3>Rig</h3><dl class="stats">
-        <dt>Tulang</dt><dd>${rep.bones?.length || 0} (nama standar Mixamo)</dd>
+        <dt>Tulang</dt><dd>${rep.bones?.length || 0} ${rep.rig_type === "quadruped" ? "(hewan berkaki empat)" : "(nama standar Mixamo)"}</dd>
         <dt>Tinggi</dt><dd>${rep.height_m} m</dd>
         <dt>Animasi</dt><dd>${anims.length}</dd></dl></div>
       ${downloadsHTML(a.downloads.filter((d) => d.url.includes("/rig/")))}
-      ${customAnimCardHTML(a)}
+      ${isQuad(a) ? "" : customAnimCardHTML(a)}
       <button class="btn wide" id="editMk">Ubah penanda & rig ulang</button>
     </div></div>`;
   wireCustomAnims(a);

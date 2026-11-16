@@ -25,6 +25,8 @@ app = FastAPI(title="gitgit3d", docs_url=None, redoc_url=None)
 signer = TimestampSigner(SECRET_KEY, salt="gitgit3d-session")
 COOKIE = "g3d_session"
 MARKER_KEYS = ["chin", "groin", "elbow_l", "elbow_r", "wrist_l", "wrist_r", "knee_l", "knee_r"]
+QUAD_MARKER_KEYS = ["head", "withers", "hips", "tail_tip", "front_foot", "back_foot"]
+QUAD_ANIMATIONS = ["idle", "walk", "run", "jump"]
 
 
 @app.middleware("http")
@@ -209,7 +211,7 @@ async def create_asset(
 class TextBody(BaseModel):
     prompt: str = Field(min_length=3, max_length=600)
     name: str = Field("", max_length=60)
-    kind: str = Field("character", pattern="^(character|object)$")
+    kind: str = Field("character", pattern="^(character|object|animal)$")
     style: str = "stylized"
     turnaround: bool = True
     resolution: int = 256
@@ -227,7 +229,7 @@ def create_from_text(body: TextBody):
         "resolution": max(128, min(320, body.resolution)),
         "target_faces": 0 if body.target_faces <= 0 else max(5000, min(200000, body.target_faces)),
         "texture_res": body.texture_res if body.texture_res in (1024, 2048) else 1024,
-        "remove_bg": True, "auto_rig": body.auto_rig and body.kind == "character",
+        "remove_bg": True, "auto_rig": body.auto_rig and body.kind in ("character", "animal"),
         "source": "text", "prompt": body.prompt.strip(), "kind": body.kind,
         "style": body.style if body.style in STYLES else "stylized", "turnaround": body.turnaround,
     }
@@ -237,7 +239,9 @@ def create_from_text(body: TextBody):
     job = store.create_job(a["id"], "text_to_image", params)
     store.create_job(a["id"], "image_to_3d", params)
     if params["auto_rig"]:
-        store.create_job(a["id"], "rig_prepare", {"height": 1.75})
+        quad = body.kind == "animal"
+        store.create_job(a["id"], "rig_prepare", {"height": 0.6 if quad else 1.75,
+                                                   "rig_type": "quadruped" if quad else "humanoid"})
     worker.wake()
     return {"asset": asset_view(store.get_asset(a["id"])), "job": job}
 
@@ -310,7 +314,8 @@ def delete_asset(aid: str):
 
 
 class PrepareBody(BaseModel):
-    height: float = Field(1.75, ge=0.2, le=10)
+    height: float = Field(1.75, ge=0.05, le=10)
+    rig_type: str = Field("humanoid", pattern="^(humanoid|quadruped)$")
 
 
 @app.post("/api/assets/{aid}/rig/prepare", dependencies=[Depends(require_auth)])
@@ -325,8 +330,9 @@ def rig_prepare(aid: str, body: PrepareBody):
 
 class RigBody(BaseModel):
     markers: dict[str, list[float]]
-    height: float = Field(1.75, ge=0.2, le=10)
+    height: float = Field(1.75, ge=0.05, le=10)
     animations: list[str] = Field(default_factory=lambda: list(ANIMATIONS))
+    rig_type: str = Field("humanoid", pattern="^(humanoid|quadruped)$")
 
 
 @app.post("/api/assets/{aid}/rig", dependencies=[Depends(require_auth)])
@@ -334,12 +340,14 @@ def rig(aid: str, body: RigBody):
     a = _asset_or_404(aid)
     if a["status"] != "ready":
         raise HTTPException(409, "Model 3D belum selesai dibuat")
-    missing = [k for k in MARKER_KEYS if k not in body.markers or len(body.markers[k]) != 2]
+    quad = body.rig_type == "quadruped"
+    keys, allowed = (QUAD_MARKER_KEYS, QUAD_ANIMATIONS) if quad else (MARKER_KEYS, ANIMATIONS)
+    missing = [k for k in keys if k not in body.markers or len(body.markers[k]) != 2]
     if missing:
         raise HTTPException(400, f"Penanda belum lengkap: {', '.join(missing)}")
-    anims = [x for x in body.animations if x in ANIMATIONS] or list(ANIMATIONS)
-    job = store.create_job(aid, "rig", {"markers": {k: body.markers[k] for k in MARKER_KEYS},
-                                        "height": body.height, "animations": anims})
+    anims = [x for x in body.animations if x in allowed] or list(allowed)
+    job = store.create_job(aid, "rig", {"markers": {k: body.markers[k] for k in keys}, "height": body.height,
+                                        "animations": anims, "rig_type": body.rig_type})
     worker.wake()
     return job
 

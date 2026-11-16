@@ -39,6 +39,17 @@ class TextGenError(RuntimeError):
 
 def build_prompt(subject: str, kind: str, style: str, turnaround: bool) -> str:
     style_txt = STYLES.get(style, STYLES["stylized"])
+    if kind == "animal":
+        if turnaround:
+            return (f"Turnaround reference sheet of a single quadruped animal: {subject}. Exactly four full views of "
+                    f"the same animal side by side in one row, evenly spaced and not overlapping, left to right: side "
+                    f"view (full profile), front view, other side view (profile facing the opposite direction), back "
+                    f"view. Standing naturally on all four legs, legs straight and visible, tail visible, same scale, "
+                    f"aligned on the same ground line, each view fully visible. Plain pure white background, no text, "
+                    f"no labels, no shadows, soft even studio lighting, orthographic, {style_txt}")
+        return (f"A single quadruped animal: {subject}. Full side view (profile), standing naturally on all four legs, "
+                f"legs straight and visible, entirely visible with margin around it. Plain pure white background, "
+                f"no text, no shadow, soft even studio lighting, {style_txt}")
     if kind == "character":
         pose = ("identical relaxed A-pose in every view with arms slightly away from the body and legs slightly "
                 "apart, feet flat on the ground") if turnaround else (

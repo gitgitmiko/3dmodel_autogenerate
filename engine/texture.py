@@ -214,10 +214,27 @@ def project_views(base: np.ndarray, pos: np.ndarray, normals: np.ndarray, views:
         opt1 = (_view_weights(pos, normals, views["side_a"], "left"), _view_weights(pos, normals, views["side_b"], "right"))
         opt2 = (_view_weights(pos, normals, views["side_a"], "right"), _view_weights(pos, normals, views["side_b"], "left"))
         score = lambda o: o[0][2]["iou"] + o[1][2]["iou"]
-        best = opt1 if score(opt1) >= score(opt2) else opt2
+
+        def color_err(o):
+            # Rata-rata selisih warna foto vs warna tebakan NeRF di area yang dilihat foto itu.
+            errs = []
+            for col, w, _ in o:
+                if col is not None and w is not None and w.sum() > 1:
+                    errs.append(float((np.abs(col - base).mean(1) * w).sum() / w.sum()))
+            return sum(errs) / len(errs) if errs else 1.0
+
+        s1, s2 = score(opt1), score(opt2)
+        if abs(s1 - s2) >= 0.03:
+            best = opt1 if s1 > s2 else opt2
+            how = "siluet"
+        else:
+            # Siluet hampir sama (mis. depan vs belakang hewan) -> putuskan dari kecocokan warna.
+            best = opt1 if color_err(opt1) <= color_err(opt2) else opt2
+            how = "warna"
         results["left"], results["right"] = (best[0], best[1]) if best is opt1 else (best[1], best[0])
-        infos["side_assignment"] = {"side_a": "left" if best is opt1 else "right",
-                                    "iou_sum": [round(score(opt1), 3), round(score(opt2), 3)]}
+        infos["side_assignment"] = {"side_a": "left" if best is opt1 else "right", "by": how,
+                                    "iou_sum": [round(s1, 3), round(s2, 3)],
+                                    "color_err": [round(color_err(opt1), 4), round(color_err(opt2), 4)]}
     for view, (col, w, info) in results.items():
         infos[view] = info
         if col is None:

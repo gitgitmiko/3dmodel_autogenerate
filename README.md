@@ -11,8 +11,11 @@ Tahap 1 (sudah jalan):
   bisa ditambahkan saat unggah atau belakangan (rig diperbarui otomatis).
 - **Text → 3D**: deskripsi teks → gambar oleh Google Flow (Nano Banana) lewat
   [gflow-cli](https://github.com/ffroliva/gflow-cli) → 3D bertekstur semua sisi.
-- **Auto-rig humanoid + animasi dasar**: kerangka 22 tulang (nama standar Mixamo), skinning otomatis,
-  animasi *idle, walk, run, wave, jump*, diekspor ke GLB dan FBX (Unity/Unreal/Godot/Blender).
+- **Auto-rig humanoid**: kerangka 22 tulang (nama standar Mixamo), skinning otomatis, 9 animasi
+  (*idle, walk, run, wave, jump, dance, attack, sit, cheer*) + **impor animasi Mixamo FBX / BVH**
+  (di-retarget otomatis), diekspor ke GLB dan FBX (Unity/Unreal/Godot/Blender).
+- **Auto-rig hewan berkaki empat**: tulang punggung, leher, kepala, ekor, 4 kaki; animasi *idle, walk, run, jump*.
+- **Remesh**: topologi quad rapi (QuadriFlow) atau segitiga dengan target jumlah face, tekstur di-bake ulang.
 
 ## Cara kerja
 
@@ -98,6 +101,36 @@ Perlakuan khusus mesh hasil AI:
 - bobot tulang kiri tidak boleh mempengaruhi sisi kanan (dan sebaliknya); vertex yang gagal di-skin
   diberi bobot dari tulang terdekat.
 
+### Animasi dari file (retarget)
+
+Rig humanoid memakai nama tulang Mixamo, jadi animasi Mixamo (Download → FBX, *Without Skin*) dan BVH
+(mis. CMU mocap) bisa diunggah per aset. Nama tulang dipetakan (prefix `mixamorig:` dibuang, alias umum
+seperti `LeftUpperArm`/`LeftThigh`/`Pelvis`), lalu untuk tiap tulang dihitung rotasi dunia relatif terhadap
+pose istirahat sumber. Karena rig sumber umumnya pose T sedangkan rig kita pose A, arah istirahat tiap
+tulang diselaraskan dulu (`rotation_difference`), baru gerakan sumber diterapkan dan dikonversi ke rotasi
+lokal mengikuti hierarki. Root motion diskalakan menurut tinggi pinggul dan dibuat *in place*.
+
+### Remesh (`engine/blender/remesh.py`)
+
+Vertex sambungan UV disatukan → voxel remesh (menjamin manifold) → smooth ringan 2 iterasi (pemeriksa
+QuadriFlow di Blender 5.x menolak keluaran voxel mentah) → QuadriFlow (atau decimate untuk mode segitiga)
+→ smart UV → bake warna dari model asli dengan Cycles *selected to active* → GLB + FBX + OBJ (quad tetap
+quad di OBJ/FBX; GLB selalu segitiga karena format glTF). Hasil bisa dijadikan model utama (rig dibuat ulang
+otomatis dan remesh diterapkan ulang setelah tekstur dibuat ulang) atau dikembalikan ke model asli.
+
+### Hewan berkaki empat (`engine/blender/autorig_quad.py`)
+
+Model hewan sebaiknya dibuat dari tampak **samping**; text → 3D jenis *Hewan* otomatis meminta turnaround
+`[samping, depan, samping lain, belakang]` dan memakai tampak samping sebagai masukan TripoSR. Penanda:
+kepala, pundak, pinggul, ujung ekor, telapak depan & belakang. Kepala ditentukan dari ujung badan yang lebih
+"gemuk" (bukan yang lebih tinggi — ekor sering terangkat di atas kepala); pundak/pinggul dibatasi dekat garis
+punggung agar tidak tertukar dengan kepala/telinga. Kaki kiri/kanan dipisah dari kedalaman mesh. Langkah
+jalan memakai urutan lateral (belakang-kiri, depan-kiri, belakang-kanan, depan-kanan); lari berupa
+*bound* dengan lenturan tulang punggung.
+
+Tampak depan vs belakang hewan sering punya siluet hampir sama, sehingga penempatan foto samping yang
+seri diputuskan dari kecocokan warna foto dengan warna tebakan NeRF.
+
 ## Menjalankan
 
 ```bash
@@ -137,8 +170,10 @@ Semua endpoint (kecuali login) butuh cookie sesi.
 | GET/PATCH/DELETE | `/api/assets/{id}` | detail (+ job, penanda) / ganti nama / hapus |
 | POST | `/api/assets/text` `{prompt, kind: character\|object, style, turnaround, resolution, target_faces, texture_res, auto_rig}` | teks → gambar (Google Flow) → 3D |
 | POST | `/api/assets/{id}/views` (multipart `image_back`/`image_left`/`image_right`, `remove`=daftar dipisah koma) | ganti foto sisi lain, buat ulang model + rig |
-| POST | `/api/assets/{id}/rig/prepare` `{height}` | tebak penanda + render tampak depan |
-| POST | `/api/assets/{id}/rig` `{markers, height, animations}` | buat rig + animasi |
+| POST | `/api/assets/{id}/rig/prepare` `{height, rig_type: humanoid\|quadruped}` | tebak penanda + render tampak depan |
+| POST | `/api/assets/{id}/rig` `{markers, height, animations, rig_type}` | buat rig + animasi |
+| POST/DELETE | `/api/assets/{id}/rig/animations` (multipart `files`) / `.../{nama}` | animasi Mixamo FBX / BVH |
+| POST | `/api/assets/{id}/remesh` `{mode: quad\|tri, target_faces, texture_res, apply}` · `/remesh/revert` | remesh |
 | GET | `/api/jobs/{id}`, `/api/queue` | status job / antrean |
 | GET | `/files/{id}/{path}?download=1` | unduh file hasil |
 
@@ -150,9 +185,11 @@ Semua endpoint (kecuali login) butuh cookie sesi.
 - [ ] Multi-view untuk **geometri** (carving siluet / model multi-view) agar bentuk samping lebih akurat.
 - [x] **Text → 3D** lewat Google Flow (gflow-cli) dengan turnaround 4 tampak.
 - [ ] **AI texturing / retexture** untuk mesh yang sudah ada (butuh GPU agar praktis).
-- [ ] **Remesh**: quad remesh & target poligon dari UI (Blender QuadriFlow / voxel remesh).
-- [ ] Animasi tambahan (dance, attack, sit) + retarget dari file Mixamo/BVH.
-- [ ] Rig untuk karakter non-humanoid (berkaki empat).
+- [x] **Remesh**: quad (QuadriFlow) / segitiga + bake ulang tekstur.
+- [x] Animasi tambahan (dance, attack, sit, cheer) + retarget dari file Mixamo FBX / BVH.
+- [x] Rig hewan berkaki empat + jenis *Hewan* di text → 3D.
+- [ ] Rig burung / hewan bersayap, ular; animasi wajah (blendshape).
+- [ ] Retarget animasi untuk rig hewan.
 - [ ] Engine lebih tajam (Hunyuan3D-2mini / TRELLIS / SF3D) bila server mendapat GPU.
 
 ## Lisensi pihak ketiga

@@ -207,7 +207,8 @@ def _requeue_rig_after_retexture(aid: str):
         store.create_job(aid, "rig", last_rig["params"])
     elif a["rig_status"] in ("prepared", "error") and (asset_dir(aid) / "rig" / "prep.json").exists():
         prep = json.loads((asset_dir(aid) / "rig" / "prep.json").read_text())
-        store.create_job(aid, "rig_prepare", {"height": prep.get("height_m", 1.75)})
+        store.create_job(aid, "rig_prepare", {"height": prep.get("height_m", 1.75),
+                                              "rig_type": prep.get("rig_type", "humanoid")})
 
 
 def _extra_views(d: Path, side_assignment: dict | None = None) -> dict:
@@ -259,6 +260,9 @@ def run_text_to_image(job: dict):
             raise RuntimeError("Tidak ada objek yang terdeteksi di gambar hasil Google Flow.")
         figs[0].save(d / "input.png")
         if len(figs) >= 4:
+            # Karakter/objek: [depan, samping, belakang, samping].
+            # Hewan: [samping, depan, samping lain, belakang] — tampak samping jadi masukan, sehingga tampak
+            # depan/belakang hewan berada di kiri/kanan kamera (ditentukan otomatis) dan samping lain di belakang.
             figs[1].save(d / "view_side_a.png")
             figs[2].save(d / "view_back.png")
             figs[3].save(d / "view_side_b.png")
@@ -280,8 +284,10 @@ def run_rig_prepare(job: dict):
     rig.mkdir(exist_ok=True)
     store.update_asset(aid, rig_status="preparing")
     store.update_job(job["id"], progress=0.2, message="Menebak posisi sendi")
-    height = str(job["params"].get("height", 1.75))
-    out = _blender("autorig.py", "prepare", str(d / "model.glb"), str(rig), height, timeout=300)
+    rig_type = job["params"].get("rig_type", "humanoid")
+    height = str(job["params"].get("height", 0.6 if rig_type == "quadruped" else 1.75))
+    script = "autorig_quad.py" if rig_type == "quadruped" else "autorig.py"
+    out = _blender(script, "prepare", str(d / "model.glb"), str(rig), height, timeout=300)
     prep = json.loads((rig / "prep.json").read_text())
     store.update_asset(aid, rig_status="prepared")
     return {"warnings": _warnings(out), "markers": prep["markers"]}
@@ -296,9 +302,14 @@ def run_rig(job: dict):
     store.update_asset(aid, rig_status="rigging")
     (rig / "markers.json").write_text(json.dumps({"markers": p["markers"]}, indent=2))
     store.update_job(job["id"], progress=0.15, message="Membangun kerangka, skinning & animasi")
-    custom = sorted(str(f) for f in (rig / "custom").glob("*") if f.suffix.lower() in (".fbx", ".bvh"))
-    out = _blender("autorig.py", "rig", str(d / "model.glb"), str(rig), str(p.get("height", 1.75)),
-                   str(rig / "markers.json"), ",".join(p.get("animations") or []), ",".join(custom), timeout=1200)
+    if p.get("rig_type") == "quadruped":
+        out = _blender("autorig_quad.py", "rig", str(d / "model.glb"), str(rig), str(p.get("height", 0.6)),
+                       str(rig / "markers.json"), ",".join(p.get("animations") or []), timeout=1200)
+    else:
+        custom = sorted(str(f) for f in (rig / "custom").glob("*") if f.suffix.lower() in (".fbx", ".bvh"))
+        out = _blender("autorig.py", "rig", str(d / "model.glb"), str(rig), str(p.get("height", 1.75)),
+                       str(rig / "markers.json"), ",".join(p.get("animations") or []), ",".join(custom),
+                       timeout=1200)
     report = json.loads((rig / "rig.json").read_text())
     store.update_job(job["id"], progress=0.9, message="Membuat thumbnail")
     try:
