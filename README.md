@@ -168,7 +168,7 @@ Semua endpoint (kecuali login) butuh cookie sesi.
 | GET | `/api/assets` | daftar aset |
 | POST | `/api/assets` (multipart: `image`, opsional `image_back`/`image_left`/`image_right`, `name`, `resolution` 128–320, `target_faces`, `texture_res` 0/1024/2048, `remove_bg`, `auto_rig`) | buat model dari gambar |
 | GET/PATCH/DELETE | `/api/assets/{id}` | detail (+ job, penanda) / ganti nama / hapus |
-| POST | `/api/assets/text` `{prompt, kind: character\|object, style, turnaround, resolution, target_faces, texture_res, auto_rig}` | teks → gambar (Google Flow) → 3D |
+| POST | `/api/assets/text` `{prompt, kind: character\|animal\|object, style, turnaround, resolution, target_faces, texture_res, auto_rig}` | teks → gambar (Google Flow) → 3D |
 | POST | `/api/assets/{id}/views` (multipart `image_back`/`image_left`/`image_right`, `remove`=daftar dipisah koma) | ganti foto sisi lain, buat ulang model + rig |
 | POST | `/api/assets/{id}/rig/prepare` `{height, rig_type: humanoid\|quadruped}` | tebak penanda + render tampak depan |
 | POST | `/api/assets/{id}/rig` `{markers, height, animations, rig_type}` | buat rig + animasi |
