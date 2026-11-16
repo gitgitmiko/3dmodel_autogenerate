@@ -15,7 +15,7 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 from . import store, worker
-from .config import (ANIMATIONS, APP_PASSWORD, COOKIE_SECURE, MAX_UPLOAD_MB, SECRET_KEY, SESSION_DAYS,
+from .config import (ANIMATIONS, APP_PASSWORD, COOKIE_SECURE, MAX_UPLOAD_MB, SECRET_KEY, SESSION_DAYS, VIEWS,
                      WEB_DIR)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -108,7 +108,8 @@ FILE_LABELS = {
 def asset_view(a: dict, with_jobs=False) -> dict:
     d = worker.asset_dir(a["id"])
     files = {k: f"files/{a['id']}/{k}" for k in
-             ["input.png", "input.jpg", "input.webp", "cutout.png", "thumb.png", "model.glb", "model-obj.zip",
+             ["input.png", "input.jpg", "input.webp", "cutout.png", "thumb.png",
+              *[f"view_{v}.png" for v in VIEWS], *[f"cutout_{v}.png" for v in VIEWS], "model.glb", "model-obj.zip",
               "model.stl", "rig/front.png", "rig/thumb.png", "rig/rigged.glb", "rig/rigged.fbx"]
              if (d / k).exists()}
     a = {**a, "files": files,
@@ -134,9 +135,40 @@ def list_assets():
     return [asset_view(a) for a in store.list_assets()]
 
 
+async def _read_image(up: UploadFile, label: str) -> Image.Image:
+    raw = await up.read(MAX_UPLOAD_MB * 1024 * 1024 + 1)
+    if len(raw) > MAX_UPLOAD_MB * 1024 * 1024:
+        raise HTTPException(413, f"Gambar {label} maksimal {MAX_UPLOAD_MB} MB")
+    try:
+        img = Image.open(io.BytesIO(raw))
+        img.load()
+    except Exception:
+        raise HTTPException(400, f"File {label} bukan gambar yang valid (PNG/JPG/WEBP)")
+    if min(img.size) < 64:
+        raise HTTPException(400, f"Gambar {label} terlalu kecil")
+    if max(img.size) > 2048:
+        img.thumbnail((2048, 2048))
+    return img
+
+
+VIEW_LABEL = {"back": "belakang", "left": "samping kiri", "right": "samping kanan"}
+
+
+async def _collect_views(**uploads) -> dict[str, Image.Image]:
+    out = {}
+    for v in VIEWS:
+        up = uploads.get(f"image_{v}")
+        if up is not None and up.filename:
+            out[v] = await _read_image(up, VIEW_LABEL[v])
+    return out
+
+
 @app.post("/api/assets", dependencies=[Depends(require_auth)])
 async def create_asset(
     image: UploadFile = File(...),
+    image_back: UploadFile | None = File(None),
+    image_left: UploadFile | None = File(None),
+    image_right: UploadFile | None = File(None),
     name: str = Form(""),
     resolution: int = Form(256),
     target_faces: int = Form(60000),
@@ -144,16 +176,10 @@ async def create_asset(
     texture_res: int = Form(1024),
     auto_rig: bool = Form(False),
 ):
-    raw = await image.read(MAX_UPLOAD_MB * 1024 * 1024 + 1)
-    if len(raw) > MAX_UPLOAD_MB * 1024 * 1024:
-        raise HTTPException(413, f"Gambar maksimal {MAX_UPLOAD_MB} MB")
-    try:
-        img = Image.open(io.BytesIO(raw))
-        img.load()
-    except Exception:
-        raise HTTPException(400, "File bukan gambar yang valid (PNG/JPG/WEBP)")
-    if min(img.size) < 64:
-        raise HTTPException(400, "Gambar terlalu kecil")
+    img = await _read_image(image, "utama")
+    views = await _collect_views(image_back=image_back, image_left=image_left, image_right=image_right)
+    if views and texture_res == 0:
+        texture_res = 1024  # foto tambahan hanya berguna untuk tekstur
     resolution = max(128, min(320, resolution))
     target_faces = 0 if target_faces <= 0 else max(5000, min(200000, target_faces))
     texture_res = texture_res if texture_res in (0, 1024, 2048) else 1024
@@ -163,15 +189,43 @@ async def create_asset(
     a = store.create_asset(name, params)
     d = worker.asset_dir(a["id"])
     d.mkdir(parents=True, exist_ok=True)
-    # Simpan sebagai PNG (mempertahankan transparansi bila ada); perkecil gambar raksasa.
-    if max(img.size) > 2048:
-        img.thumbnail((2048, 2048))
-    img.save(d / "input.png")
+    img.save(d / "input.png")  # PNG mempertahankan transparansi bila ada
+    for v, vimg in views.items():
+        vimg.save(d / f"view_{v}.png")
     job = store.create_job(a["id"], "image_to_3d", params)
     if auto_rig:
         store.create_job(a["id"], "rig_prepare", {"height": 1.75})
     worker.wake()
     return {"asset": asset_view(store.get_asset(a["id"])), "job": job}
+
+
+@app.post("/api/assets/{aid}/views", dependencies=[Depends(require_auth)])
+async def set_views(
+    aid: str,
+    image_back: UploadFile | None = File(None),
+    image_left: UploadFile | None = File(None),
+    image_right: UploadFile | None = File(None),
+    remove: str = Form(""),
+):
+    """Tambah/ganti/hapus foto sisi lain lalu buat ulang model + tekstur (rig ikut dibuat ulang otomatis)."""
+    a = _asset_or_404(aid)
+    if any(j["asset_id"] == aid for j in store.active_jobs()):
+        raise HTTPException(409, "Aset sedang diproses, tunggu sampai selesai")
+    views = await _collect_views(image_back=image_back, image_left=image_left, image_right=image_right)
+    d = worker.asset_dir(aid)
+    for v in [x for x in remove.split(",") if x in VIEWS]:
+        (d / f"view_{v}.png").unlink(missing_ok=True)
+        (d / f"cutout_{v}.png").unlink(missing_ok=True)
+    for v, vimg in views.items():
+        vimg.save(d / f"view_{v}.png")
+    params = dict(a["params"])
+    if params.get("texture_res", 1024) == 0:
+        params["texture_res"] = 1024
+    params["auto_rig"] = False
+    store.update_asset(aid, params=params, status="queued")
+    job = store.create_job(aid, "image_to_3d", params)
+    worker.wake()
+    return {"asset": asset_view(store.get_asset(aid)), "job": job}
 
 
 def _asset_or_404(aid: str) -> dict:

@@ -14,6 +14,11 @@ const MARKERS = [
 ];
 const MIRROR = { elbow_l: "elbow_r", elbow_r: "elbow_l", wrist_l: "wrist_r", wrist_r: "wrist_l", knee_l: "knee_r", knee_r: "knee_l" };
 const ANIM_LABEL = { idle: "Diam (idle)", walk: "Jalan", run: "Lari", wave: "Melambai", jump: "Lompat" };
+const VIEWS = [
+  { k: "back", label: "Belakang" },
+  { k: "left", label: "Samping kiri" },
+  { k: "right", label: "Samping kanan" },
+];
 const KIND_LABEL = { image_to_3d: "Gambar → 3D", rig_prepare: "Menyiapkan rig", rig: "Rigging & animasi" };
 
 const state = { assets: [], current: null, tab: "model", pollTimer: null, markers: null, symmetric: true };
@@ -90,11 +95,45 @@ async function refreshQueue() {
   } catch { /* abaikan */ }
 }
 
+// ------------------------------------------------------------------ slot foto sisi lain
+// files: {back: File|null, ...}; existing: {back: url}; removed: Set; status: {back: {used, iou}}
+function mountViewSlots(el, { existing = {}, status = {}, onChange = () => {} } = {}) {
+  const st = { files: {}, removed: new Set() };
+  const render = () => {
+    el.innerHTML = VIEWS.map(({ k, label }) => {
+      const f = st.files[k];
+      const url = f ? URL.createObjectURL(f) : !st.removed.has(k) && existing[k];
+      const s = !f && url && status[k];
+      const badge = s ? (s.used ? `<span class="st">dipakai</span>` : `<span class="st" title="Siluet tidak cocok dengan model (IoU ${s.iou})">dilewati</span>`) : "";
+      return `<label class="vslot ${f ? "new-file" : ""}" data-k="${k}">
+        <input type="file" accept="image/png,image/jpeg,image/webp" hidden>
+        ${url ? `<img src="${url}" alt="">${badge}<button type="button" class="x" title="Hapus">×</button>` : `<span>＋<br>tambah</span>`}
+        <span class="lbl">${label}</span></label>`;
+    }).join("");
+    el.querySelectorAll(".vslot").forEach((slot) => {
+      const k = slot.dataset.k, input = $("input", slot);
+      const set = (file) => { if (file && file.type.startsWith("image/")) { st.files[k] = file; st.removed.delete(k); render(); onChange(st); } };
+      input.addEventListener("change", () => set(input.files[0]));
+      ["dragenter", "dragover"].forEach((ev) => slot.addEventListener(ev, (e) => { e.preventDefault(); slot.classList.add("over"); }));
+      ["dragleave", "drop"].forEach((ev) => slot.addEventListener(ev, (e) => { e.preventDefault(); slot.classList.remove("over"); }));
+      slot.addEventListener("drop", (e) => set(e.dataTransfer.files[0]));
+      $(".x", slot)?.addEventListener("click", (e) => {
+        e.preventDefault(); e.stopPropagation();
+        if (st.files[k]) delete st.files[k]; else st.removed.add(k);
+        render(); onChange(st);
+      });
+    });
+  };
+  render();
+  return st;
+}
+
 // ------------------------------------------------------------------ halaman baru
 function renderNew() {
   const main = $("#main");
   main.replaceChildren($("#tplNew").content.cloneNode(true));
   let file = null;
+  const views = mountViewSlots($("#newViews"));
   const drop = $("#drop"), fileIn = $("#file");
   const setFile = (f) => {
     if (!f || !f.type.startsWith("image/")) return;
@@ -120,6 +159,7 @@ function renderNew() {
     if (!file) return;
     const fd = new FormData();
     fd.append("image", file);
+    for (const [k, f] of Object.entries(views.files)) fd.append(`image_${k}`, f);
     fd.append("name", $("#name").value);
     main.querySelectorAll(".seg").forEach((seg) => fd.append(seg.dataset.name, $("button.on", seg).dataset.v));
     fd.append("remove_bg", $("#removeBg").checked);
@@ -234,14 +274,32 @@ function renderModelTab() {
       <dt>Vertex</dt><dd>${(s.vertices || 0).toLocaleString("id-ID")}</dd>
       <dt>Face</dt><dd>${(s.faces || 0).toLocaleString("id-ID")}</dd>
       <dt>Resolusi</dt><dd>${a.params.resolution}³</dd>
-      <dt>Tekstur</dt><dd>${s.texture ? `${s.texture}px${s.texture_projected ? " + gambar asli" : ""}` : "vertex color"}</dd>
+      <dt>Tekstur</dt><dd>${s.texture ? `${s.texture}px` : "vertex color"}</dd>
+      <dt>Foto dipakai</dt><dd>${s.texture_views ? Object.entries(s.texture_views).filter(([, v]) => v.used).length + " dari " + Object.keys(s.texture_views).length : (s.texture_projected ? "1" : "—")}</dd>
       <dt>Waktu proses</dt><dd>${s.seconds ?? "—"} dtk</dd></dl></div>` : "";
   const rigCta = a.status === "ready" ? `<div class="card"><h3>Karakter humanoid?</h3>
       <p class="muted small">Buat kerangka (rig) otomatis + animasi jalan, lari, lompat, melambai, idle.</p>
       <button class="btn primary wide" id="toRig">Lanjut ke rigging →</button></div>` : "";
+  const viewsCard = a.status === "ready" || a.status === "error" ? `<div class="card"><h3>Foto sisi lain</h3>
+      <p class="muted small">Tambahkan foto belakang/samping agar tekstur sisi itu tajam. Model dibuat ulang (±1–2 menit)${a.rig_status === "rigged" ? ", rig ikut diperbarui otomatis" : ""}.</p>
+      <div class="view-slots" id="assetViews"></div><p></p>
+      <button class="btn primary wide hidden" id="applyViews">Terapkan & buat ulang tekstur</button><p class="error" id="viewsErr"></p></div>` : "";
   body.innerHTML = `<div class="view-grid"><div class="viewer">${viewer}</div>
-    <div class="side-col">${stats}${downloadsHTML(a.downloads.filter((d) => !d.url.includes("/rig/")))}${rigCta}${thumbs}</div></div>`;
+    <div class="side-col">${stats}${downloadsHTML(a.downloads.filter((d) => !d.url.includes("/rig/")))}${rigCta}${viewsCard}${thumbs}</div></div>`;
   $("#toRig")?.addEventListener("click", () => go(a.id, "rig"));
+  if ($("#assetViews")) {
+    const existing = Object.fromEntries(VIEWS.filter(({ k }) => f[`view_${k}.png`]).map(({ k }) => [k, f[`view_${k}.png`] + "?v=" + a.created]));
+    const vs = mountViewSlots($("#assetViews"), { existing, status: s.texture_views || {},
+      onChange: (st) => $("#applyViews").classList.toggle("hidden", !Object.keys(st.files).length && !st.removed.size) });
+    $("#applyViews").addEventListener("click", async () => {
+      const fd = new FormData();
+      for (const [k, file] of Object.entries(vs.files)) fd.append(`image_${k}`, file);
+      fd.append("remove", [...vs.removed].join(","));
+      $("#applyViews").disabled = true;
+      try { await api(`api/assets/${a.id}/views`, { method: "POST", body: fd }); openAsset(a.id, true); }
+      catch (err) { $("#viewsErr").textContent = err.message; $("#applyViews").disabled = false; }
+    });
+  }
 }
 
 function renderRigTab() {

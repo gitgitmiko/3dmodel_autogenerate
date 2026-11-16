@@ -10,7 +10,7 @@ import traceback
 from pathlib import Path
 
 from . import store
-from .config import ASSETS_DIR, BLENDER, BLENDER_DIR, MODEL_IDLE_MINUTES
+from .config import ASSETS_DIR, BLENDER, BLENDER_DIR, MODEL_IDLE_MINUTES, VIEWS
 
 log = logging.getLogger("gitgit3d.worker")
 _wake = threading.Event()
@@ -54,6 +54,7 @@ def run_image_to_3d(job: dict):
         foreground_ratio=float(p.get("foreground_ratio", 0.85)),
         smooth_iters=int(p.get("smooth_iters", 5)),
         texture_res=int(p.get("texture_res", 1024)),
+        extra_views={v: d / f"view_{v}.png" for v in VIEWS if (d / f"view_{v}.png").exists()},
     )
     store.update_asset(aid, status="processing")
 
@@ -87,7 +88,25 @@ def run_image_to_3d(job: dict):
     except Exception as e:  # thumbnail tidak wajib
         log.warning("thumbnail gagal: %s", e)
     store.update_asset(aid, status="ready", stats=res["stats"])
+    _requeue_rig_after_retexture(aid)
     return res["stats"]
+
+
+def _requeue_rig_after_retexture(aid: str):
+    """Setelah tekstur dibuat ulang, rig lama masih memakai tekstur lama -> buat ulang otomatis.
+
+    Geometri TripoSR deterministik untuk gambar & parameter yang sama, jadi penanda lama tetap berlaku.
+    """
+    a = store.get_asset(aid)
+    if store.active_jobs() and any(j["asset_id"] == aid and j["kind"] != "image_to_3d" and j["status"] == "queued"
+                                   for j in store.active_jobs()):
+        return  # sudah ada job rig dalam antrean (mis. auto_rig saat unggah)
+    last_rig = next((j for j in store.jobs_for(aid) if j["kind"] == "rig" and j["status"] == "done"), None)
+    if a["rig_status"] == "rigged" and last_rig:
+        store.create_job(aid, "rig", last_rig["params"])
+    elif a["rig_status"] in ("prepared", "error") and (asset_dir(aid) / "rig" / "prep.json").exists():
+        prep = json.loads((asset_dir(aid) / "rig" / "prep.json").read_text())
+        store.create_job(aid, "rig_prepare", {"height": prep.get("height_m", 1.75)})
 
 
 def run_rig_prepare(job: dict):

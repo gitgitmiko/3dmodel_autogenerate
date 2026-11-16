@@ -73,31 +73,84 @@ def rasterize_positions(vertices: np.ndarray, faces: np.ndarray, uvs: np.ndarray
 
 
 # Kamera gambar input TripoSR: di sumbu +X, jarak 1.9, FOV 40°, atas = +Z, kanan gambar = +Y.
+# Karakter menghadap kamera depan, jadi sisi kiri karakter = +Y.
+# Kamera tambahan diputar mengelilingi sumbu Z: kiri (kamera di sisi kiri karakter) = 90°, belakang = 180°.
 CAM_DIST = 1.9
 CAM_F = 1.0 / (2.0 * np.tan(np.radians(20.0)))
+VIEW_AZIMUTH = {"front": 0.0, "left": 90.0, "back": 180.0, "right": 270.0}
+VIEW_LABEL = {"front": "depan", "left": "kiri", "back": "belakang", "right": "kanan"}
 
 
-def _project(p: np.ndarray):
-    """Titik TripoSR -> (u, v) gambar input dalam 0..1 (v=0 di atas) + kedalaman."""
-    depth = CAM_DIST - p[:, 0]
-    return 0.5 + p[:, 1] / depth * CAM_F, 0.5 - p[:, 2] / depth * CAM_F, depth
+def _camera(view: str):
+    a = np.radians(VIEW_AZIMUTH[view])
+    c = np.array([np.cos(a), np.sin(a), 0.0], dtype=np.float32) * CAM_DIST
+    look = -c / CAM_DIST
+    right = np.cross(look, [0.0, 0.0, 1.0]).astype(np.float32)
+    return c, look, right / np.linalg.norm(right), np.array([0, 0, 1], dtype=np.float32)
 
 
-def project_input_image(img: np.ndarray, pos: np.ndarray, normals: np.ndarray, image_rgba: Image.Image):
-    """Timpa texel yang terlihat dari kamera input dengan warna gambar asli (detail resolusi penuh).
+def _project(p: np.ndarray, view: str = "front"):
+    """Titik TripoSR -> (u, v) gambar kamera `view` dalam 0..1 (v=0 di atas) + kedalaman."""
+    c, look, right, up = _camera(view)
+    d = p - c
+    depth = d @ look
+    return 0.5 + (d @ right) / depth * CAM_F, 0.5 - (d @ up) / depth * CAM_F, depth
 
-    img/pos/normals: array per texel terisi (N,3). Kembalikan (img_baru, info).
-    Medan NeRF hanya menyimpan warna buram; gambar asli adalah satu-satunya sumber detail tajam,
-    tapi hanya sah untuk permukaan yang menghadap kamera dan tidak terhalang.
+
+def _iou(a: np.ndarray, b: np.ndarray) -> float:
+    return float((a & b).sum() / max((a | b).sum(), 1))
+
+
+def _bbox(m: np.ndarray):
+    ys, xs = np.nonzero(m)
+    return xs.min(), xs.max(), ys.min(), ys.max()
+
+
+def _fit_view(sil: np.ndarray, alpha: np.ndarray):
+    """Cari skala & geser (dalam satuan uv) yang memetakan siluet mesh ke siluet gambar.
+
+    Foto belakang/samping dari pengguna tidak dibingkai persis seperti gambar depan, jadi uv proyeksi
+    dikoreksi: uv_gambar = s * (uv_mesh - c_mesh) + c_gambar. Skala awal dari tinggi bbox (lebar berubah
+    menurut pose lengan), lalu disempurnakan dengan pencarian kisi kecil yang memaksimalkan IoU.
     """
+    from scipy import ndimage
+
+    R = sil.shape[0]
+    mx0, mx1, my0, my1 = _bbox(sil)
+    ax0, ax1, ay0, ay1 = _bbox(alpha)
+    cm = np.array([(mx0 + mx1) / 2, (my0 + my1) / 2]) / R
+    ca = np.array([(ax0 + ax1) / 2, (ay0 + ay1) / 2]) / R
+    s0 = (ay1 - ay0) / max(my1 - my0, 1)
+    yy, xx = np.mgrid[0:R, 0:R]
+    gu, gv = (xx + 0.5) / R, (yy + 0.5) / R
+    best = (-1.0, s0, 0.0, 0.0)
+    for s in s0 * np.linspace(0.92, 1.08, 9):
+        for dx in np.linspace(-0.03, 0.03, 7):
+            for dy in np.linspace(-0.03, 0.03, 7):
+                # titik gambar -> titik mesh (invers), lalu ambil siluet mesh di sana
+                mu = (gu - ca[0] - dx) / s + cm[0]
+                mv = (gv - ca[1] - dy) / s + cm[1]
+                iu = np.clip((mu * R).astype(int), 0, R - 1)
+                iv = np.clip((mv * R).astype(int), 0, R - 1)
+                inside = (mu >= 0) & (mu < 1) & (mv >= 0) & (mv < 1)
+                warped = sil[iv, iu] & inside
+                score = _iou(warped, alpha)
+                if score > best[0]:
+                    best = (score, s, dx, dy)
+    score, s, dx, dy = best
+    return score, (float(s), cm, ca + np.array([dx, dy]))
+
+
+def _view_weights(pos: np.ndarray, normals: np.ndarray, image_rgba: Image.Image, view: str):
+    """Hitung (warna, bobot, info) proyeksi satu gambar ke texel."""
     from scipy import ndimage
 
     rgba = np.asarray(image_rgba.convert("RGBA")).astype(np.float32) / 255.0
     S = rgba.shape[0]
-    u, v, depth = _project(pos)
+    u, v, depth = _project(pos, view)
 
     # Depth buffer dari texel itu sendiri (cukup rapat) untuk menguji keterhalangan.
-    R = 384
+    R = 256
     iu = np.clip((u * R).astype(int), 0, R - 1)
     iv = np.clip((v * R).astype(int), 0, R - 1)
     zbuf = np.full((R, R), np.inf, dtype=np.float32)
@@ -105,17 +158,26 @@ def project_input_image(img: np.ndarray, pos: np.ndarray, normals: np.ndarray, i
     sil = np.isfinite(zbuf)
     zbuf = ndimage.minimum_filter(np.where(sil, zbuf, 1e9), size=3)
     visible = depth <= zbuf[iv, iu] + 0.025
-
-    # Pengaman: siluet mesh harus cocok dengan alpha gambar, kalau tidak proyeksi akan bergeser.
-    alpha_small = np.asarray(image_rgba.convert("RGBA").resize((R, R)))[:, :, 3] > 127
     sil = ndimage.binary_fill_holes(ndimage.binary_closing(sil, iterations=2))
-    iou = float((sil & alpha_small).sum() / max((sil | alpha_small).sum(), 1))
-    if iou < 0.6:
-        return img, {"projected": False, "iou": round(iou, 3)}
+    alpha_small = np.asarray(image_rgba.convert("RGBA").resize((R, R)))[:, :, 3] > 127
 
-    view = np.array([CAM_DIST, 0, 0], dtype=np.float32) - pos
-    view /= np.linalg.norm(view, axis=1, keepdims=True)
-    facing = (normals * view).sum(1)
+    if view == "front":  # gambar depan = masukan model, kamera tepat sama
+        score, xf = _iou(sil, alpha_small), None
+    else:
+        score, xf = _fit_view(sil, alpha_small)
+    info = {"iou": round(score, 3)}
+    if score < 0.6:
+        info["used"] = False
+        return None, None, info
+    if xf is not None:
+        s, cm, ca = xf
+        u, v = s * (u - cm[0]) + ca[0], s * (v - cm[1]) + ca[1]
+        info["scale"] = round(s, 3)
+
+    c = _camera(view)[0]
+    vd = c[None] - pos
+    vd /= np.linalg.norm(vd, axis=1, keepdims=True)
+    facing = (normals * vd).sum(1)
     w = np.clip((facing - 0.25) / 0.35, 0, 1)
     w = w * w * (3 - 2 * w) * visible
 
@@ -130,17 +192,41 @@ def project_input_image(img: np.ndarray, pos: np.ndarray, normals: np.ndarray, i
         return (a[y0, x0] * (1 - fx) * (1 - fy) + a[y0, x0 + 1] * fx * (1 - fy)
                 + a[y0 + 1, x0] * (1 - fx) * fy + a[y0 + 1, x0 + 1] * fx * fy)
 
-    w = (w * np.clip((bil(alpha[..., None])[:, 0] - 0.6) / 0.4, 0, 1))[:, None]
-    out = img * (1 - w) + bil(rgba[:, :, :3]) * w
-    return out, {"projected": True, "iou": round(iou, 3), "coverage": round(float((w > 0.5).mean()), 3)}
+    w = w * np.clip((bil(alpha[..., None])[:, 0] - 0.6) / 0.4, 0, 1)
+    info.update(used=True, coverage=round(float((w > 0.5).mean()), 3))
+    return bil(rgba[:, :, :3]), w, info
+
+
+def project_views(base: np.ndarray, pos: np.ndarray, normals: np.ndarray, views: dict[str, Image.Image]):
+    """Gabungkan beberapa foto ke warna texel. base = warna NeRF (dipakai di area yang tak terlihat foto mana pun).
+
+    Tiap texel memakai foto yang paling tegak lurus terhadap permukaannya (bobot dipangkatkan agar transisi
+    antar foto tidak terlalu lebar), lalu dicampur dengan warna NeRF sesuai cakupan total.
+    """
+    num = np.zeros_like(base)
+    den = np.zeros(len(base), dtype=np.float32)
+    cover = np.zeros(len(base), dtype=np.float32)
+    infos = {}
+    for view, img in views.items():
+        col, w, info = _view_weights(pos, normals, img, view)
+        infos[view] = info
+        if col is None:
+            continue
+        sharp = w ** 4
+        num += col * sharp[:, None]
+        den += sharp
+        cover = np.maximum(cover, w)
+    proj = num / np.maximum(den, 1e-6)[:, None]
+    out = base * (1 - cover[:, None]) + proj * cover[:, None]
+    return out, {"projected": any(i.get("used") for i in infos.values()), "views": infos}
 
 
 def bake_texture(mesh: trimesh.Trimesh, model, scene_code: torch.Tensor, tex_res: int = 1024,
-                 image_rgba: Image.Image | None = None) -> tuple[trimesh.Trimesh, dict]:
+                 views: dict[str, Image.Image] | None = None) -> tuple[trimesh.Trimesh, dict]:
     """mesh harus masih di sistem koordinat TripoSR (sebelum diputar/diskalakan).
 
-    image_rgba: gambar input persegi tanpa background (yang sama persis dengan masukan model);
-    bila diberikan, bagian depan tekstur diambil dari gambar itu.
+    views: {"front"|"back"|"left"|"right": gambar RGBA persegi tanpa background}. "front" harus gambar
+    yang sama persis dengan masukan model; yang lain diselaraskan otomatis lewat siluet.
     """
     t = time.time()
     normals = np.asarray(mesh.vertex_normals)
@@ -157,9 +243,9 @@ def bake_texture(mesh: trimesh.Trimesh, model, scene_code: torch.Tensor, tex_res
         col = model.renderer.query_triplane(model.decoder, torch.from_numpy(pos[mask]), scene_code)["color"]
     colors = col.clamp(0, 1).cpu().numpy()
     info = {"projected": False}
-    if image_rgba is not None:
+    if views:
         face_normals = trimesh.Trimesh(vertices=verts, faces=faces, process=False).face_normals
-        colors, info = project_input_image(colors, pos[mask], face_normals[fid[mask]].astype(np.float32), image_rgba)
+        colors, info = project_views(colors, pos[mask], face_normals[fid[mask]].astype(np.float32), views)
     img = np.zeros((tex_res, tex_res, 3), dtype=np.float32)
     img[mask] = colors
 

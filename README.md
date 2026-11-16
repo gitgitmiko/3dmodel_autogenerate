@@ -7,6 +7,8 @@ Tahap 1 (sudah jalan):
 
 - **Image → 3D**: satu gambar menjadi model 3D (GLB / OBJ / STL).
 - **Texture bake**: UV atlas + tekstur 1K/2K; sisi depan memakai gambar asli sehingga detailnya tajam.
+- **Multi-view**: foto belakang / samping kiri / samping kanan (opsional) ikut ditempel ke tekstur,
+  bisa ditambahkan saat unggah atau belakangan (rig diperbarui otomatis).
 - **Auto-rig humanoid + animasi dasar**: kerangka 22 tulang (nama standar Mixamo), skinning otomatis,
   animasi *idle, walk, run, wave, jump*, diekspor ke GLB dan FBX (Unity/Unreal/Godot/Blender).
 
@@ -44,7 +46,20 @@ rigging + 5 animasi ±3–5 detik. Model TripoSR dilepas dari RAM setelah 15 men
    mesh tidak cocok dengan gambar (IoU < 0,6).
 4. Texel kosong diisi warna tetangga terdekat agar tidak ada garis di sambungan UV.
 
-Sisi belakang/samping tetap buram karena hanya ada satu gambar — itu batas pendekatan satu-gambar.
+Tanpa foto tambahan, sisi belakang/samping memakai warna tebakan NeRF (buram).
+
+### Multi-view
+
+Foto tambahan memakai kamera virtual yang diputar mengelilingi sumbu vertikal (kiri 90°, belakang 180°,
+kanan 270°; "kiri" = difoto dari sisi kiri karakter). Karena framing foto pengguna tidak sama persis
+dengan gambar depan, siluet mesh dari kamera itu dicocokkan ke alpha foto (skala dari tinggi bbox, lalu
+pencarian kisi skala ±8% & geser ±3% yang memaksimalkan IoU). Foto dengan IoU < 0,6 dilewati dan
+ditandai "dilewati" di UI. Setiap texel memakai foto yang paling tegak lurus terhadap permukaannya
+(bobot^4 agar sambungan tidak lebar), sisanya warna NeRF.
+
+Geometri tetap dari gambar depan saja (TripoSR model satu-gambar), jadi foto samping/belakang
+memperbaiki warna, bukan bentuk. Uji arah & cermin: `scripts/make_test_views.py` membuat objek
+dengan kotak merah di punggung kiri.
 Tanpa tekstur (opsi "Vertex color"), warna vertex dikonversi sRGB→linear agar tidak pucat di glTF.
 
 ### Rigging: kenapa ada penanda?
@@ -98,8 +113,9 @@ Semua endpoint (kecuali login) butuh cookie sesi.
 | --- | --- | --- |
 | POST | `/api/login` `{password}` | masuk |
 | GET | `/api/assets` | daftar aset |
-| POST | `/api/assets` (multipart: `image`, `name`, `resolution` 128–320, `target_faces`, `texture_res` 0/1024/2048, `remove_bg`, `auto_rig`) | buat model dari gambar |
+| POST | `/api/assets` (multipart: `image`, opsional `image_back`/`image_left`/`image_right`, `name`, `resolution` 128–320, `target_faces`, `texture_res` 0/1024/2048, `remove_bg`, `auto_rig`) | buat model dari gambar |
 | GET/PATCH/DELETE | `/api/assets/{id}` | detail (+ job, penanda) / ganti nama / hapus |
+| POST | `/api/assets/{id}/views` (multipart `image_back`/`image_left`/`image_right`, `remove`=daftar dipisah koma) | ganti foto sisi lain, buat ulang model + rig |
 | POST | `/api/assets/{id}/rig/prepare` `{height}` | tebak penanda + render tampak depan |
 | POST | `/api/assets/{id}/rig` `{markers, height, animations}` | buat rig + animasi |
 | GET | `/api/jobs/{id}`, `/api/queue` | status job / antrean |
@@ -109,7 +125,8 @@ Semua endpoint (kecuali login) butuh cookie sesi.
 
 - [x] **Texture bake** (UV atlas + tekstur dari medan warna + proyeksi gambar asli).
 - [ ] Peta normal/roughness (PBR penuh) dan perbaikan sisi belakang tekstur.
-- [ ] **Multi-view image → 3D** (depan/samping/belakang) untuk geometri lebih akurat.
+- [x] **Multi-view tekstur** (foto belakang/samping ditempel ke tekstur).
+- [ ] Multi-view untuk **geometri** (carving siluet / model multi-view) agar bentuk samping lebih akurat.
 - [ ] **Text → 3D**: text → gambar (model difusi ringan / API eksternal) → pipeline image→3D.
 - [ ] **AI texturing / retexture** untuk mesh yang sudah ada (butuh GPU agar praktis).
 - [ ] **Remesh**: quad remesh & target poligon dari UI (Blender QuadriFlow / voxel remesh).

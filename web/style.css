@@ -96,7 +96,19 @@ input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .drop img { max-width: 100%; max-height: 520px; object-fit: contain; }
 .drop-hint { display: grid; gap: 6px; text-align: center; padding: 20px; }
 .drop-icon { font-size: 32px; color: var(--accent); }
-.opts { display: grid; gap: 14px; align-content: start; }
+.opts { display: grid; gap: 14px; align-content: start; grid-column: 2; grid-row: 1 / span 2; }
+.views-box { grid-column: 1; }
+.views-box { display: grid; gap: 10px; }
+.views-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.view-slots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.vslot { position: relative; aspect-ratio: 1; border: 2px dashed var(--line); border-radius: 10px; display: grid; place-items: center;
+  cursor: pointer; background: var(--bg2); overflow: hidden; text-align: center; font-size: 12px; color: var(--muted); transition: .15s; }
+.vslot:hover, .vslot.over { border-color: var(--accent); }
+.vslot img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.vslot .lbl { position: absolute; left: 0; right: 0; bottom: 0; background: color-mix(in srgb, var(--bg) 75%, transparent); padding: 3px; color: var(--text); font-weight: 600; }
+.vslot .x { position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; border-radius: 50%; border: 0; background: rgba(0,0,0,.65); color: #fff; cursor: pointer; line-height: 22px; padding: 0; }
+.vslot .st { position: absolute; top: 4px; left: 4px; font-size: 10px; padding: 1px 6px; border-radius: 99px; background: rgba(0,0,0,.65); color: #fff; }
+.vslot.new-file { border-style: solid; border-color: var(--accent); }
 .field { display: grid; gap: 6px; font-weight: 600; }
 .seg { display: flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
 .seg button { flex: 1; background: transparent; color: var(--muted); border: 0; padding: 8px 4px; font: inherit; cursor: pointer; }
@@ -158,6 +170,7 @@ model-viewer { width: 100%; height: 100%; --poster-color: transparent; }
   .logout { display: none; }
   .panel { padding: 16px; }
   .new-grid, .view-grid { grid-template-columns: 1fr; }
+  .opts, .views-box { grid-column: auto; grid-row: auto; }
   .drop { min-height: 260px; }
   .viewer { height: 56vh; }
 }

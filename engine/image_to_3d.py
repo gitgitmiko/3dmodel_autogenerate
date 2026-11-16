@@ -11,7 +11,7 @@ import os
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
@@ -44,6 +44,9 @@ class ImageTo3DOptions:
     height_m: float = 1.0          # tinggi akhir model (meter); rigging menskalakan ulang sendiri
     texture_res: int = 1024        # 0 = vertex color saja; 1024/2048 = bake tekstur UV
     project_image: bool = True     # tempel gambar asli ke sisi depan tekstur (lebih tajam)
+    # Foto tambahan (opsional) untuk tekstur sisi lain: {"back"|"left"|"right": path}.
+    # "left" = difoto dari sisi KIRI karakter (wajah karakter tampak menghadap ke kiri layar).
+    extra_views: dict = field(default_factory=dict)
 
 
 _model = None
@@ -183,11 +186,15 @@ def image_to_3d(
         mesh = _clean(mesh, opts)
 
         if opts.texture_res > 0:
-            report(0.80, f"Bake tekstur {opts.texture_res}px")
             from engine.texture import bake_texture
 
-            mesh, tex_info = bake_texture(mesh, model, scene_codes[0], opts.texture_res,
-                                          image_rgba=cutout if opts.project_image else None)
+            views = {"front": cutout} if opts.project_image else {}
+            for name, path in opts.extra_views.items():
+                report(0.78, f"Menyiapkan foto {name}")
+                _, views[name] = preprocess(Image.open(path), opts)
+                views[name].save(out_dir / f"cutout_{name}.png")
+            report(0.80, f"Bake tekstur {opts.texture_res}px dari {len(views)} foto")
+            mesh, tex_info = bake_texture(mesh, model, scene_codes[0], opts.texture_res, views=views)
         else:
             # glTF menganggap COLOR_0 linear, sedangkan keluaran TripoSR sRGB -> konversi agar tidak pucat.
             c = np.asarray(mesh.visual.vertex_colors).astype(np.float32) / 255.0
@@ -206,6 +213,7 @@ def image_to_3d(
         "raw_faces": int(raw_faces),
         "texture": int(opts.texture_res),
         "texture_projected": bool(tex_info.get("projected")),
+        "texture_views": tex_info.get("views", {}),
         "seconds": round(time.time() - t0, 1),
         "bounds": mesh.bounds.round(4).tolist(),
     }

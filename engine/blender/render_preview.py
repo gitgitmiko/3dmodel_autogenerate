@@ -76,7 +76,7 @@ scene.world = bpy.data.worlds.new("w")
 scene.world.color = (0.12, 0.12, 0.14)
 scene.render.resolution_x = scene.render.resolution_y = args.size
 
-DIRS = {"front": Vector((0, -1, 0)), "side": Vector((1, 0, 0)), "34": Vector((1, -1, 0.6)), "back": Vector((0, 1, 0))}
+DIRS = {"front": Vector((0, -1, 0)), "side": Vector((1, 0, 0)), "34": Vector((1, -1, 0.6)), "back": Vector((0, 1, 0)), "left": Vector((1, 0, 0)), "right": Vector((-1, 0, 0))}
 base = args.out[:-4] if args.out.endswith(".png") else args.out
 for i, view in enumerate(args.views.split(",")):
     cam_data = bpy.data.cameras.new("cam")
