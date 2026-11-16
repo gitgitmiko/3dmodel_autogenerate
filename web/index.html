@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>gitgit3d</title>
+  <meta name="description" content="Gambar jadi model 3D, rigging otomatis, dan animasi dasar — self-hosted.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="vendor/model-viewer.min.js"></script>
+</head>
+<body>
+  <div id="login" class="login hidden">
+    <form class="card login-card" id="loginForm">
+      <div class="brand big"><span class="logo">◆</span> gitgit3d</div>
+      <p class="muted">Gambar → model 3D → rig + animasi</p>
+      <input type="password" id="pw" placeholder="Password" autocomplete="current-password" required>
+      <button class="btn primary" type="submit">Masuk</button>
+      <p class="error" id="loginErr"></p>
+    </form>
+  </div>
+
+  <div id="app" class="layout hidden">
+    <aside class="side">
+      <div class="side-head">
+        <div class="brand"><span class="logo">◆</span> gitgit3d</div>
+        <button class="btn primary sm" id="newBtn">＋ Baru</button>
+      </div>
+      <div class="queue muted" id="queueInfo"></div>
+      <div class="gallery" id="gallery"></div>
+      <button class="btn ghost sm logout" id="logoutBtn">Keluar</button>
+    </aside>
+
+    <main class="main" id="main"></main>
+  </div>
+
+  <template id="tplNew">
+    <section class="panel">
+      <header class="panel-head">
+        <div>
+          <h1>Gambar ke 3D</h1>
+          <p class="muted">Unggah satu gambar objek atau karakter. Hasil terbaik: satu objek, tampak depan, latar polos, karakter dengan lengan & kaki sedikit terbuka (pose A/T).</p>
+        </div>
+      </header>
+      <form id="newForm" class="new-grid">
+        <label class="drop" id="drop">
+          <input type="file" id="file" accept="image/png,image/jpeg,image/webp" hidden>
+          <img id="dropPreview" alt="" class="hidden">
+          <div id="dropHint" class="drop-hint">
+            <div class="drop-icon">⬆</div>
+            <strong>Tarik gambar ke sini</strong>
+            <span class="muted">atau klik untuk memilih · PNG/JPG/WEBP · maks 15 MB</span>
+          </div>
+        </label>
+        <div class="opts card">
+          <label class="field">Nama
+            <input type="text" id="name" maxlength="60" placeholder="otomatis dari nama file">
+          </label>
+          <div class="field">Detail geometri
+            <div class="seg" data-name="resolution">
+              <button type="button" data-v="192">Cepat</button>
+              <button type="button" data-v="256" class="on">Standar</button>
+              <button type="button" data-v="320">Detail</button>
+            </div>
+          </div>
+          <div class="field">Jumlah poligon
+            <div class="seg" data-name="target_faces">
+              <button type="button" data-v="20000">20rb</button>
+              <button type="button" data-v="60000" class="on">60rb</button>
+              <button type="button" data-v="120000">120rb</button>
+              <button type="button" data-v="0">Penuh</button>
+            </div>
+          </div>
+          <label class="check"><input type="checkbox" id="removeBg" checked> Hapus background otomatis</label>
+          <label class="check"><input type="checkbox" id="autoRig"> Karakter humanoid — langsung siapkan rigging</label>
+          <button class="btn primary wide" id="submitBtn" type="submit" disabled>Buat model 3D</button>
+          <p class="muted small">Diproses di CPU server: ±1–2 menit per gambar. Satu job berjalan dalam satu waktu.</p>
+          <p class="error" id="newErr"></p>
+        </div>
+      </form>
+    </section>
+  </template>
+
+  <template id="tplAsset">
+    <section class="panel">
+      <header class="panel-head">
+        <div class="title-wrap">
+          <h1 class="asset-name" id="aName" title="Klik untuk ganti nama"></h1>
+          <div class="muted small" id="aMeta"></div>
+        </div>
+        <div class="head-actions">
+          <button class="btn ghost sm danger" id="delBtn">Hapus</button>
+        </div>
+      </header>
+      <nav class="tabs">
+        <button data-tab="model" class="on">Model 3D</button>
+        <button data-tab="rig">Rigging &amp; Animasi</button>
+      </nav>
+      <div id="tabBody"></div>
+    </section>
+  </template>
+
+  <script src="app.js" type="module"></script>
+</body>
+</html>

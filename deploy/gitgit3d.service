@@ -1,0 +1,18 @@
+[Unit]
+Description=gitgit3d — image to 3D + auto-rig (3d.gitgitmiko.my.id)
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/github-repos/gitgit3d
+ExecStart=%h/github-repos/gitgit3d/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8800 --workers 1 --proxy-headers
+Restart=on-failure
+RestartSec=5
+# Prioritas rendah agar CCTV/Frigate & layanan lain tetap lancar saat model diproses.
+Nice=10
+CPUWeight=40
+MemoryHigh=6G
+MemoryMax=8G
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
