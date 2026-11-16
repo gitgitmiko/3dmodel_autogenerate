@@ -13,7 +13,7 @@ const MARKERS = [
   { k: "knee_r", label: "Lutut kanan", color: "#ff5ca8" },
 ];
 const MIRROR = { elbow_l: "elbow_r", elbow_r: "elbow_l", wrist_l: "wrist_r", wrist_r: "wrist_l", knee_l: "knee_r", knee_r: "knee_l" };
-const ANIM_LABEL = { idle: "Diam (idle)", walk: "Jalan", run: "Lari", wave: "Melambai", jump: "Lompat" };
+const ANIM_LABEL = { idle: "Diam (idle)", walk: "Jalan", run: "Lari", wave: "Melambai", jump: "Lompat", dance: "Joget", attack: "Menyerang", sit: "Duduk", cheer: "Sorak" };
 const VIEWS = [
   { k: "back", label: "Belakang" },
   { k: "left", label: "Samping kiri" },
@@ -126,6 +126,29 @@ function mountViewSlots(el, { existing = {}, status = {}, onChange = () => {} } 
   };
   render();
   return st;
+}
+
+// ------------------------------------------------------------------ animasi dari file (Mixamo FBX / BVH)
+function customAnimCardHTML(a) {
+  const list = a.custom_anims || [];
+  return `<div class="card"><h3>Animasi dari file</h3>
+    <p class="muted small">Mixamo: pilih animasi → Download → Format <b>FBX</b>, <b>Without Skin</b>, 30 fps. BVH (mis. CMU mocap) juga bisa. Gerakan di-retarget otomatis ke rig ini.</p>
+    <div class="dl">${list.map((n) => `<div class="anim-file"><span>${esc(n)}</span><button class="btn ghost sm danger" data-del-anim="${esc(n)}">Hapus</button></div>`).join("")}</div>
+    <label class="btn sm wide" style="margin-top:8px">＋ Unggah .fbx / .bvh<input type="file" id="animFiles" accept=".fbx,.bvh" multiple hidden></label>
+    <p class="error" id="animErr"></p></div>`;
+}
+function wireCustomAnims(a) {
+  $("#animFiles")?.addEventListener("change", async (e) => {
+    const fd = new FormData();
+    [...e.target.files].forEach((f) => fd.append("files", f));
+    try { await api(`api/assets/${a.id}/rig/animations`, { method: "POST", body: fd }); openAsset(a.id, true); }
+    catch (err) { $("#animErr").textContent = err.message; }
+  });
+  document.querySelectorAll("[data-del-anim]").forEach((b) => b.addEventListener("click", async () => {
+    if (!confirm(`Hapus animasi ${b.dataset.delAnim}?`)) return;
+    try { await api(`api/assets/${a.id}/rig/animations/${encodeURIComponent(b.dataset.delAnim)}`, { method: "DELETE" }); openAsset(a.id, true); }
+    catch (err) { $("#animErr").textContent = err.message; }
+  }));
 }
 
 // ------------------------------------------------------------------ halaman baru
@@ -392,10 +415,12 @@ function renderMarkerEditor(errJob) {
         `<label class="check"><input type="checkbox" class="anim" value="${n}" ${chosen.has(n) ? "checked" : ""}> ${ANIM_LABEL[n]}</label>`).join("")}</div>
         <p></p><label class="field">Tinggi karakter (meter)<input type="number" id="height" value="${prep.height_m || 1.75}" min="0.2" max="10" step="0.05"></label>
       </div>
+      ${customAnimCardHTML(a)}
       <button class="btn primary wide" id="rigBtn">Buat rig + animasi</button>
       ${a.rig_status === "rigged" ? '<button class="btn ghost wide" id="backRig">← Kembali ke hasil rig</button>' : ""}
     </div></div>`;
   drawMarkers();
+  wireCustomAnims(a);
   $("#sym").addEventListener("change", (e) => { state.symmetric = e.target.checked; });
   $("#resetMk").addEventListener("click", () => { state.markers = structuredClone(prep.markers); drawMarkers(); });
   $("#backRig")?.addEventListener("click", () => { state.editMarkers = false; renderTab(); });
@@ -451,7 +476,7 @@ function renderRigged(job) {
   body.innerHTML = `<div class="view-grid">
     <div class="viewer"><model-viewer id="rv" src="${a.files["rig/rigged.glb"]}?v=${job?.finished || 0}" camera-controls autoplay shadow-intensity="1"
       environment-image="neutral" touch-action="pan-y" camera-orbit="25deg 78deg auto" alt="Model ter-rig"></model-viewer>
-      <div class="anim-btns">${anims.map((n, i) => `<button class="btn sm ${i === 0 ? "on" : ""}" data-anim="${n}">${ANIM_LABEL[n] || n}</button>`).join("")}</div></div>
+      <div class="anim-btns">${anims.map((n, i) => `<button class="btn sm ${i === 0 ? "on" : ""}" data-anim="${esc(n)}">${esc(ANIM_LABEL[n] || n)}</button>`).join("")}</div></div>
     <div class="side-col">
       ${warningsHTML(rep.warnings)}
       <div class="card"><h3>Rig</h3><dl class="stats">
@@ -459,8 +484,10 @@ function renderRigged(job) {
         <dt>Tinggi</dt><dd>${rep.height_m} m</dd>
         <dt>Animasi</dt><dd>${anims.length}</dd></dl></div>
       ${downloadsHTML(a.downloads.filter((d) => d.url.includes("/rig/")))}
+      ${customAnimCardHTML(a)}
       <button class="btn wide" id="editMk">Ubah penanda & rig ulang</button>
     </div></div>`;
+  wireCustomAnims(a);
   const mv = $("#rv");
   mv.addEventListener("load", () => { if (anims[0]) { mv.animationName = anims[0]; mv.play(); } });
   body.querySelectorAll("[data-anim]").forEach((b) => b.addEventListener("click", () => {

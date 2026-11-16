@@ -94,6 +94,16 @@ def run_image_to_3d(job: dict):
     return res["stats"]
 
 
+def requeue_rig(aid: str) -> dict | None:
+    """Buat ulang rig dengan parameter rig terakhir yang berhasil (mis. setelah animasi file ditambah)."""
+    last_rig = next((j for j in store.jobs_for(aid) if j["kind"] == "rig" and j["status"] == "done"), None)
+    if not last_rig:
+        return None
+    job = store.create_job(aid, "rig", last_rig["params"])
+    wake()
+    return job
+
+
 def _requeue_rig_after_retexture(aid: str):
     """Setelah tekstur dibuat ulang, rig lama masih memakai tekstur lama -> buat ulang otomatis.
 
@@ -197,8 +207,9 @@ def run_rig(job: dict):
     store.update_asset(aid, rig_status="rigging")
     (rig / "markers.json").write_text(json.dumps({"markers": p["markers"]}, indent=2))
     store.update_job(job["id"], progress=0.15, message="Membangun kerangka, skinning & animasi")
+    custom = sorted(str(f) for f in (rig / "custom").glob("*") if f.suffix.lower() in (".fbx", ".bvh"))
     out = _blender("autorig.py", "rig", str(d / "model.glb"), str(rig), str(p.get("height", 1.75)),
-                   str(rig / "markers.json"), ",".join(p.get("animations") or []), timeout=900)
+                   str(rig / "markers.json"), ",".join(p.get("animations") or []), ",".join(custom), timeout=1200)
     report = json.loads((rig / "rig.json").read_text())
     store.update_job(job["id"], progress=0.9, message="Membuat thumbnail")
     try:

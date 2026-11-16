@@ -182,3 +182,6 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .seg.wrap button { flex: 1 0 30%; border-top: 1px solid var(--line); margin-top: -1px; }
 .prompt-box { font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 900px) { .text-box { grid-column: auto; grid-row: auto; } }
+.anim-file { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; overflow-wrap: anywhere; }
+.anim-grid { grid-template-columns: 1fr 1fr 1fr; }
+@media (max-width: 900px) { .anim-grid { grid-template-columns: 1fr 1fr; } }

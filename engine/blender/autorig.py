@@ -35,6 +35,7 @@ OUT = Path(argv[2])
 HEIGHT = float(argv[3]) if len(argv) > 3 and argv[3] else 1.75
 MARKERS_FILE = argv[4] if len(argv) > 4 and argv[4] else None
 ANIMS = argv[5].split(",") if len(argv) > 5 and argv[5] else ["idle", "walk", "run", "wave", "jump"]
+CUSTOM_ANIMS = [x for x in argv[6].split(",") if x] if len(argv) > 6 and argv[6] else []  # .fbx / .bvh
 FPS = 30
 MARKER_KEYS = ["chin", "groin", "elbow_l", "elbow_r", "wrist_l", "wrist_r", "knee_l", "knee_r"]
 OUT.mkdir(parents=True, exist_ok=True)
@@ -164,8 +165,37 @@ def depth_at(x, z, r=0.035):
 
 
 # ---------------------------------------------------------------- 3. tebakan penanda
+def find_neck():
+    """Leher dari atas ke bawah: lewati kepala (gumpalan lebar pertama), ambil bagian tersempit di bawahnya.
+
+    Lebih tahan terhadap proporsi chibi/kepala besar dan hiasan kecil di atas kepala (bulu helm, antena,
+    telinga) dibanding mencari bagian tersempit dalam rentang tetap.
+    """
+    zs = np.arange(0.985 * H, 0.3 * H, -0.005 * H)
+    w = np.array([width_at(z) for z in zs])
+    w = np.convolve(w, np.ones(5) / 5, mode="same")
+    run_max, head_i = 0.0, None
+    for i, x in enumerate(w):
+        if x > run_max:
+            run_max, head_i = x, i
+        elif run_max > 0.06 * H and x < 0.8 * run_max:
+            break
+    else:
+        return None
+    lo_i, lo = head_i, w[head_i]
+    for j in range(head_i, len(w)):
+        if w[j] < lo:
+            lo_i, lo = j, w[j]
+        elif w[j] > lo * 1.3 and j > lo_i + 2:
+            break
+    if lo_i == head_i:
+        return None
+    return float(zs[lo_i])
+
+
 def estimate_markers():
     m = {}
+    neck = find_neck()
     # Kaki: cari irisan terendah yang memuat dua kelompok di kiri & kanan pusat, lacak ke atas sampai menyatu.
     start, cur = None, None
     for z in np.arange(0.02 * H, 0.35 * H, 0.01 * H):
@@ -179,8 +209,9 @@ def estimate_markers():
             break
     crotch = None
     track = {"l": [], "r": []}
+    top_search = (neck - 0.12 * H) if neck else 0.65 * H
     if start is not None:
-        for z in np.arange(start, 0.65 * H, 0.01 * H):
+        for z in np.arange(start, top_search, 0.01 * H):
             cs = clusters_1d(slice_pts(z))
             if not cs:
                 continue
@@ -191,17 +222,19 @@ def estimate_markers():
             for s, g in (("l", gl), ("r", gr)):
                 cur[s] = g[:, 0].mean()
                 track[s].append((z, cur[s]))
-    if crotch is None or crotch < 0.2 * H:
-        warn("Selangkangan tidak terdeteksi otomatis — periksa penanda")
-        crotch = 0.47 * H
+    if crotch is None or crotch < 0.15 * H:
+        warn("Selangkangan tidak terdeteksi otomatis (tertutup jubah/rok?) — periksa penanda")
+        # Proporsi: selangkangan ≈ 0,55 × tinggi leher (dewasa 0,47/0,85; chibi juga mendekati).
+        crotch = 0.55 * neck if neck else 0.47 * H
     m["groin"] = [0.0, crotch]
 
-    # Leher = bagian tersempit di atas dada; dagu sedikit di atasnya.
-    span = H - crotch
-    zs = np.arange(crotch + 0.45 * span, crotch + 0.9 * span, 0.005 * H)
-    ws = np.array([width_at(z) for z in zs])
-    ok = ws > 0.02 * H
-    neck = float(zs[ok][np.argmin(ws[ok])]) if ok.any() else crotch + 0.72 * span
+    if neck is None or neck <= crotch + 0.1 * H:
+        # Cara lama: bagian tersempit di rentang atas badan.
+        span = H - crotch
+        zs = np.arange(crotch + 0.45 * span, crotch + 0.9 * span, 0.005 * H)
+        ws = np.array([width_at(z) for z in zs])
+        ok = ws > 0.02 * H
+        neck = float(zs[ok][np.argmin(ws[ok])]) if ok.any() else crotch + 0.72 * span
     torso = neck - crotch
     m["chin"] = [0.0, neck + 0.06 * torso]
 
@@ -265,13 +298,15 @@ if MODE == "prepare":
     raise SystemExit(0)
 
 # ---------------------------------------------------------------- 4. sendi dari penanda
-mk = estimate_markers()
+given = {}
 if MARKERS_FILE:
     given = json.loads(Path(MARKERS_FILE).read_text())
     given = given.get("markers", given)
-    for k in MARKER_KEYS:
-        if k in given:
-            mk[k] = [float(given[k][0]), float(given[k][1])]
+# Tebakan otomatis hanya bila ada penanda yang belum diberikan (agar peringatannya tidak menyesatkan).
+mk = {} if all(k in given for k in MARKER_KEYS) else estimate_markers()
+for k in MARKER_KEYS:
+    if k in given:
+        mk[k] = [float(given[k][0]), float(given[k][1])]
 report["markers"] = mk
 
 chin_z, groin_z = mk["chin"][1], mk["groin"][1]
@@ -550,7 +585,90 @@ def pose_jump(t):
     return r, Vector((0, 0, -0.18 * H * crouch + 0.28 * H * up))
 
 
+def _bump(x):
+    """0..1..0 halus untuk x di 0..1."""
+    return math.sin(math.pi * min(max(x, 0.0), 1.0)) ** 2
+
+
+def pose_dance(t):
+    """Joget sederhana 2 ketukan: goyang pinggul kiri-kanan, lutut mengayun, tangan bergantian ke atas."""
+    p = 2 * math.pi * t / 1.0
+    s = math.sin(p)
+    d = (1 - math.cos(2 * p)) / 2  # tekukan lutut, 2x per siklus
+    r = {
+        "LeftArm": [("y", arm_target("l", 15 + 55 * max(0.0, s))), ("x", -20)],
+        "RightArm": [("y", arm_target("r", 15 + 55 * max(0.0, -s))), ("x", -20)],
+        "LeftForeArm": [("x", -35 - 25 * max(0.0, -s))], "RightForeArm": [("x", -35 - 25 * max(0.0, s))],
+        "LeftUpLeg": [("x", -14 * d)], "RightUpLeg": [("x", -14 * d)],
+        "LeftLeg": [("x", 28 * d)], "RightLeg": [("x", 28 * d)],
+        "LeftFoot": [("x", -14 * d)], "RightFoot": [("x", -14 * d)],
+        "Spine": [("y", 7 * s)], "Spine2": [("y", -5 * s), ("z", 8 * s)],
+        "Head": [("y", -6 * s), ("z", 10 * s)],
+    }
+    return r, Vector((0.025 * H * s, 0, -0.03 * H * d))
+
+
+def pose_attack(t):
+    """Kombinasi pukulan kanan-kiri dari posisi kuda-kuda (siklus 1,2 dtk)."""
+    u = (t % 1.2) / 1.2
+    pr, pl = _bump((u - 0.08) / 0.3), _bump((u - 0.55) / 0.3)
+
+    def arm(punch):
+        # jaga: lengan ke depan & siku menekuk; pukul: lengan lurus ke depan
+        return [("y", arm_target("l", -60)), ("x", -55 - 30 * punch)], [("x", -115 + 105 * punch)]
+
+    la, lf = arm(pl)
+    ra, rf = arm(pr)
+    ra[0] = ("y", arm_target("r", -60))
+    r = {
+        "LeftArm": la, "LeftForeArm": lf, "RightArm": ra, "RightForeArm": rf,
+        "Spine": [("x", 6), ("z", 18 * pl - 18 * pr)], "Spine2": [("z", 10 * pl - 10 * pr)],
+        "Head": [("x", -4), ("z", -12 * pl + 12 * pr)],
+        "LeftUpLeg": [("x", -22), ("y", 6)], "RightUpLeg": [("x", 8), ("y", -6)],
+        "LeftLeg": [("x", 30)], "RightLeg": [("x", 22)],
+        "LeftFoot": [("x", -10)], "RightFoot": [("x", -20)],
+    }
+    return r, Vector((0, 0.01 * H * (pr + pl), -0.04 * H))
+
+
+def pose_sit(t):
+    """Duduk (di kursi tak terlihat) sambil bernapas pelan; tangan bertumpu di paha."""
+    b = math.sin(2 * math.pi * t / 2.4)
+    r = relaxed_arms([("x", -38)], [("x", -38)], down=-80)
+    r.update({
+        "LeftForeArm": [("x", -40)], "RightForeArm": [("x", -40)],
+        "LeftUpLeg": [("x", -88), ("z", 6)], "RightUpLeg": [("x", -88), ("z", -6)],
+        "LeftLeg": [("x", 88)], "RightLeg": [("x", 88)],
+        "Spine": [("x", 4 + 1.5 * b)], "Spine1": [("x", 1.5 * b)], "Head": [("x", -3 * b)],
+    })
+    return r, Vector((0, 0.02 * H, -THIGH_LEN * 0.98 + 0.002 * H * b))
+
+
+def pose_cheer(t):
+    """Sorak kemenangan: kedua tangan ke atas, lompat kecil."""
+    p = 2 * math.pi * t / 0.9
+    hop = max(0.0, math.sin(p))
+    crouch = max(0.0, -math.sin(p))
+    r = {
+        "LeftArm": [("y", arm_target("l", 62 + 12 * math.sin(p * 2)))],
+        "RightArm": [("y", arm_target("r", 62 + 12 * math.sin(p * 2 + 1)))],
+        "LeftForeArm": [("y", 15)], "RightForeArm": [("y", -15)],
+        "LeftUpLeg": [("x", -25 * crouch)], "RightUpLeg": [("x", -25 * crouch)],
+        "LeftLeg": [("x", 45 * crouch)], "RightLeg": [("x", 45 * crouch)],
+        "LeftFoot": [("x", -20 * crouch + 15 * hop)], "RightFoot": [("x", -20 * crouch + 15 * hop)],
+        "Spine": [("x", -4)], "Head": [("x", -12)],
+    }
+    return r, Vector((0, 0, 0.06 * H * hop - 0.05 * H * crouch))
+
+
+_ul = arm_data.bones["LeftUpLeg"]
+THIGH_LEN = (_ul.tail_local - _ul.head_local).length
+
 LIB = {
+    "dance": (pose_dance, 2.0, True),
+    "attack": (pose_attack, 1.2, True),
+    "sit": (pose_sit, 2.4, True),
+    "cheer": (pose_cheer, 1.8, True),
     "idle": (pose_idle, 2.4, True),
     "walk": (pose_walk, 1.1, True),
     "run": (lambda t: pose_walk(t, run=True), 0.7, True),
@@ -559,6 +677,7 @@ LIB = {
 }
 
 rig.animation_data_create()
+bpy.context.scene.render.fps = FPS  # sebelum impor BVH (use_fps_scale) agar durasi benar
 hips_rest = arm_data.bones["Hips"].matrix_local.to_3x3()
 made = []
 for anim in ANIMS:
@@ -583,6 +702,121 @@ for anim in ANIMS:
     track.strips.new(anim, 0, act)
     rig.animation_data.action = None
     made.append({"name": anim, "frames": n, "seconds": round(n / FPS, 2), "loop": loop})
+
+# ---------------------------------------------------------------- 7b. retarget animasi dari file (Mixamo FBX / BVH)
+ALIASES = {
+    "pelvis": "Hips", "hip": "Hips", "chest": "Spine2", "upperchest": "Spine2",
+    "leftcollar": "LeftShoulder", "rightcollar": "RightShoulder", "leftclavicle": "LeftShoulder",
+    "rightclavicle": "RightShoulder", "leftupperarm": "LeftArm", "rightupperarm": "RightArm",
+    "leftlowerarm": "LeftForeArm", "rightlowerarm": "RightForeArm", "leftthigh": "LeftUpLeg",
+    "rightthigh": "RightUpLeg", "leftupperleg": "LeftUpLeg", "rightupperleg": "RightUpLeg",
+    "leftshin": "LeftLeg", "rightshin": "RightLeg", "leftlowerleg": "LeftLeg", "rightlowerleg": "RightLeg",
+    "lefttoe": "LeftToeBase", "righttoe": "RightToeBase", "lefttoes": "LeftToeBase", "righttoes": "RightToeBase",
+}
+TARGET_LOWER = {n.lower(): n for n in bone_names}
+
+
+def map_bone(src_name: str):
+    n = src_name.split(":")[-1].split("|")[-1]
+    for pre in ("mixamorig", "bip01", "bip001"):
+        if n.lower().startswith(pre):
+            n = n[len(pre):].lstrip("_ ")
+    key = n.replace("_", "").replace(" ", "").lower()
+    return TARGET_LOWER.get(key) or ALIASES.get(key)
+
+
+def retarget(path: str, in_place: bool = True):
+    scene = bpy.context.scene
+    before = set(bpy.data.objects)
+    if path.lower().endswith(".bvh"):
+        bpy.ops.import_anim.bvh(filepath=path, use_fps_scale=True, update_scene_fps=False,
+                                update_scene_duration=False, rotate_mode="NATIVE")
+    else:
+        bpy.ops.import_scene.fbx(filepath=path, automatic_bone_orientation=False, ignore_leaf_bones=True)
+    new_objs = [o for o in bpy.data.objects if o not in before]
+    src = next((o for o in new_objs if o.type == "ARMATURE"), None)
+    if src is None or not (src.animation_data and src.animation_data.action):
+        for o in new_objs:
+            bpy.data.objects.remove(o, do_unlink=True)
+        raise RuntimeError("file tidak berisi armature beranimasi")
+    act_src = src.animation_data.action
+    f0, f1 = (int(round(x)) for x in act_src.frame_range)
+    mapping = {}
+    for b in src.data.bones:
+        t = map_bone(b.name)
+        if t and t not in mapping.values():
+            mapping[b.name] = t
+    if "Hips" not in mapping.values() or len(mapping) < 8:
+        for o in new_objs:
+            bpy.data.objects.remove(o, do_unlink=True)
+        raise RuntimeError(f"nama tulang tidak dikenali (cocok {len(mapping)}: {sorted(mapping.values())})")
+    inv = {t: s_ for s_, t in mapping.items()}
+    M = src.matrix_world.copy()
+    M3 = M.to_3x3()
+    src_rest_q = {s_: (M3 @ src.data.bones[s_].matrix_local.to_3x3()).to_quaternion() for s_ in mapping}
+    # Selaraskan arah istirahat: rig sumber biasanya pose T, rig kita pose A (atau sebaliknya).
+    align = {}
+    for t, s_ in inv.items():
+        sb, tb = src.data.bones[s_], arm_data.bones[t]
+        d_src = (M3 @ (sb.tail_local - sb.head_local)).normalized()
+        d_tgt = (tb.tail_local - tb.head_local).normalized()
+        align[t] = d_tgt.rotation_difference(d_src)
+    hb = src.data.bones[inv["Hips"]]
+    src_hips_rest = M @ hb.head_local
+    src_hip_h = max(src_hips_rest.z - min((M @ b.head_local).z for b in src.data.bones), 1e-4)
+    tgt_hip_h = max(arm_data.bones["Hips"].head_local.z, 1e-4)
+    scale = tgt_hip_h / src_hip_h
+
+    name = Path(path).stem[:40]
+    act = bpy.data.actions.new("_retarget_tmp")
+    act.use_fake_user = True
+    rig.animation_data.action = act
+    order = [b.name for b in arm_data.bones]  # induk selalu sebelum anak
+    for k, f in enumerate(range(f0, f1 + 1)):
+        scene.frame_set(f)
+        W = {}
+        for t in order:
+            parent = arm_data.bones[t].parent
+            if t in inv:
+                s_ = inv[t]
+                posed = (M @ src.pose.bones[s_].matrix).to_quaternion()
+                W[t] = posed @ src_rest_q[s_].inverted() @ align[t]
+            else:
+                W[t] = W[parent.name] if parent else Quaternion()
+            q = (W[parent.name].inverted() @ W[t]) if parent else W[t]
+            pbt = pb[t]
+            pbt.rotation_quaternion = to_local(t, q)
+            pbt.keyframe_insert("rotation_quaternion", frame=k, group=t)
+        delta = (M @ src.pose.bones[inv["Hips"]].head) - src_hips_rest
+        delta *= scale
+        if in_place:
+            delta.x = delta.y = 0.0
+        pb["Hips"].location = hips_rest.inverted() @ delta
+        pb["Hips"].keyframe_insert("location", frame=k, group="Hips")
+    n = f1 - f0
+    act.frame_range = (0, max(n, 1))
+    rig.animation_data.action = None
+    for o in new_objs:
+        bpy.data.objects.remove(o, do_unlink=True)
+    bpy.data.actions.remove(act_src)
+    existing = {a.name for a in bpy.data.actions if a is not act}
+    base, i = name, 2
+    while name in existing or name in LIB:
+        name, i = f"{base}_{i}", i + 1
+    act.name = name
+    track = rig.animation_data.nla_tracks.new()
+    track.name = name
+    track.strips.new(name, 0, act)
+    scene.frame_set(0)
+    return {"name": name, "frames": n, "seconds": round(n / FPS, 2), "loop": True, "source": Path(path).name,
+            "mapped_bones": len(mapping)}
+
+
+for path in CUSTOM_ANIMS:
+    try:
+        made.append(retarget(path))
+    except Exception as e:  # satu file gagal tidak menggagalkan rig
+        warn(f"Animasi {Path(path).name} gagal di-retarget: {e}")
 
 for p in pb:
     p.rotation_quaternion = Quaternion()

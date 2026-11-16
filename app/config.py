@@ -36,5 +36,7 @@ COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "1") == "1"
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "15"))
 # Lepas model TripoSR dari RAM setelah menganggur sekian menit (hemat ~3 GB).
 MODEL_IDLE_MINUTES = int(os.environ.get("MODEL_IDLE_MINUTES", "15"))
-ANIMATIONS = ["idle", "walk", "run", "wave", "jump"]
+ANIMATIONS = ["idle", "walk", "run", "wave", "jump", "dance", "attack", "sit", "cheer"]
+CUSTOM_ANIM_EXT = (".fbx", ".bvh")
+MAX_ANIM_MB = int(os.environ.get("MAX_ANIM_MB", "30"))
 VIEWS = ["back", "left", "right"]  # foto tambahan opsional untuk tekstur multi-view

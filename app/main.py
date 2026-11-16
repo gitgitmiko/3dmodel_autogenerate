@@ -15,7 +15,7 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 from . import store, worker
-from .config import (ANIMATIONS, APP_PASSWORD, COOKIE_SECURE, MAX_UPLOAD_MB, SECRET_KEY, SESSION_DAYS, VIEWS,
+from .config import (ANIMATIONS, CUSTOM_ANIM_EXT, MAX_ANIM_MB, APP_PASSWORD, COOKIE_SECURE, MAX_UPLOAD_MB, SECRET_KEY, SESSION_DAYS, VIEWS,
                      WEB_DIR)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -126,6 +126,9 @@ def asset_view(a: dict, with_jobs=False) -> dict:
         a["rig_prep"] = json.loads(prep.read_text()) if prep.exists() else None
         rj = d / "rig" / "rig.json"
         a["rig_report"] = json.loads(rj.read_text()) if rj.exists() else None
+        cdir = d / "rig" / "custom"
+        a["custom_anims"] = sorted(f.name for f in cdir.glob("*") if f.suffix.lower() in CUSTOM_ANIM_EXT) \
+            if cdir.exists() else []
         mj = d / "rig" / "markers.json"
         a["rig_markers"] = json.loads(mj.read_text())["markers"] if mj.exists() else None
     return a
@@ -336,6 +339,54 @@ def rig(aid: str, body: RigBody):
                                         "height": body.height, "animations": anims})
     worker.wake()
     return job
+
+
+def _safe_anim_name(filename: str) -> str:
+    import re
+
+    stem, ext = Path(filename or "anim").stem, Path(filename or "").suffix.lower()
+    if ext not in CUSTOM_ANIM_EXT:
+        raise HTTPException(400, "Format animasi harus .fbx (Mixamo) atau .bvh")
+    stem = re.sub(r"[^A-Za-z0-9_-]+", "_", stem).strip("_")[:40] or "anim"
+    return stem + ext
+
+
+@app.post("/api/assets/{aid}/rig/animations", dependencies=[Depends(require_auth)])
+async def add_animations(aid: str, files: list[UploadFile] = File(...)):
+    """Unggah animasi Mixamo FBX / BVH; di-retarget ke rig aset ini (rig dibuat ulang bila sudah ada)."""
+    a = _asset_or_404(aid)
+    if a["status"] != "ready":
+        raise HTTPException(409, "Model 3D belum selesai dibuat")
+    cdir = worker.asset_dir(aid) / "rig" / "custom"
+    cdir.mkdir(parents=True, exist_ok=True)
+    saved = []
+    for up in files:
+        name = _safe_anim_name(up.filename)
+        raw = await up.read(MAX_ANIM_MB * 1024 * 1024 + 1)
+        if len(raw) > MAX_ANIM_MB * 1024 * 1024:
+            raise HTTPException(413, f"{up.filename}: maksimal {MAX_ANIM_MB} MB")
+        head = raw[:32]
+        if name.endswith(".bvh") and not head.lstrip().upper().startswith(b"HIERARCHY"):
+            raise HTTPException(400, f"{up.filename} bukan file BVH")
+        if name.endswith(".fbx") and not (head.startswith(b"Kaydara FBX Binary") or b"FBX" in raw[:400]):
+            raise HTTPException(400, f"{up.filename} bukan file FBX")
+        (cdir / name).write_bytes(raw)
+        saved.append(name)
+    job = worker.requeue_rig(aid) if a["rig_status"] == "rigged" and not any(
+        j["asset_id"] == aid for j in store.active_jobs()) else None
+    return {"saved": saved, "job": job}
+
+
+@app.delete("/api/assets/{aid}/rig/animations/{name}", dependencies=[Depends(require_auth)])
+def delete_animation(aid: str, name: str):
+    a = _asset_or_404(aid)
+    f = worker.asset_dir(aid) / "rig" / "custom" / _safe_anim_name(name)
+    if not f.exists():
+        raise HTTPException(404, "Animasi tidak ditemukan")
+    f.unlink()
+    job = worker.requeue_rig(aid) if a["rig_status"] == "rigged" and not any(
+        j["asset_id"] == aid for j in store.active_jobs()) else None
+    return {"ok": True, "job": job}
 
 
 @app.get("/api/jobs/{jid}", dependencies=[Depends(require_auth)])
