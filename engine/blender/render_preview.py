@@ -20,6 +20,7 @@ ap.add_argument("--anim")
 ap.add_argument("--frame", type=int, default=0)
 ap.add_argument("--joints", action="store_true", help="tampilkan titik sendi armature")
 ap.add_argument("--size", type=int, default=512)
+ap.add_argument("--wire", action="store_true", help="tampilkan wireframe topologi")
 args = ap.parse_args(sys.argv[sys.argv.index("--") + 1:])
 args.src, args.out = os.path.abspath(args.src), os.path.abspath(args.out)
 
@@ -62,6 +63,20 @@ if rig and args.joints:
             s = bpy.context.active_object
             s.data.materials.append(mat)
             s.show_in_front = True
+
+if args.wire:
+    wmat = bpy.data.materials.new("wire")
+    wmat.diffuse_color = (0.05, 0.05, 0.08, 1)
+    for o in meshes:
+        w = o.copy()
+        w.data = o.data.copy()
+        scene.collection.objects.link(w)
+        mod = w.modifiers.new("w", "WIREFRAME")
+        mod.thickness = size * 0.0015
+        mod.use_replace = True
+        w.data.materials.clear()
+        w.data.materials.append(wmat)
+        w.color = (0.05, 0.05, 0.08, 1)
 
 scene.render.engine = "BLENDER_WORKBENCH"
 shading = scene.display.shading

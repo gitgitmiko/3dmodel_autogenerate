@@ -89,9 +89,98 @@ def run_image_to_3d(job: dict):
         (d / "thumb_34.png").unlink(missing_ok=True)
     except Exception as e:  # thumbnail tidak wajib
         log.warning("thumbnail gagal: %s", e)
+    (d / "model_original.glb").unlink(missing_ok=True)
     store.update_asset(aid, status="ready", stats=res["stats"])
-    _requeue_rig_after_retexture(aid)
+    rm = (store.get_asset(aid)["params"] or {}).get("remesh")
+    if rm and rm.get("apply"):
+        store.create_job(aid, "remesh", rm)  # job remesh yang memicu rig ulang
+    else:
+        _requeue_rig_after_retexture(aid)
     return res["stats"]
+
+
+def _zip(files: list[Path], dest: Path):
+    import zipfile
+
+    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
+        for f in files:
+            if f.exists():
+                z.write(f, f.name)
+
+
+def run_remesh(job: dict):
+    import shutil
+
+    import trimesh
+
+    aid = job["asset_id"]
+    d = asset_dir(aid)
+    p = job["params"]
+    rdir = d / "remesh"
+    shutil.rmtree(rdir, ignore_errors=True)
+    src = d / "model_original.glb" if (d / "model_original.glb").exists() else d / "model.glb"
+    mode = "quad" if p.get("mode") == "quad" else "tri"
+    store.update_job(job["id"], progress=0.15,
+                     message="QuadriFlow + bake tekstur" if mode == "quad" else "Decimate + bake tekstur")
+    _blender("remesh.py", str(src), str(rdir), mode, str(int(p.get("target_faces", 8000))),
+             str(int(p.get("texture_res", 1024))), timeout=1200)
+    rep = json.loads((rdir / "remesh.json").read_text())
+    _zip([rdir / "model.obj", rdir / "model.mtl", rdir / "texture.png"], rdir / "model-obj.zip")
+    store.update_job(job["id"], progress=0.85, message="Membuat thumbnail")
+    try:
+        _blender("render_preview.py", str(rdir / "model.glb"), str(rdir / "thumb.png"), "--views", "34",
+                 "--size", "384", "--wire", timeout=180)
+        (rdir / "thumb_34.png").unlink(missing_ok=True)
+    except Exception as e:
+        log.warning("thumbnail remesh gagal: %s", e)
+    a = store.get_asset(aid)
+    params = dict(a["params"])
+    stats = dict(a["stats"] or {})
+    stats["remesh"] = {k: rep.get(k) for k in ("mode", "faces", "quads", "vertices", "seconds")}
+    if p.get("apply"):
+        if not (d / "model_original.glb").exists():
+            shutil.copy2(d / "model.glb", d / "model_original.glb")
+        shutil.copy2(rdir / "model.glb", d / "model.glb")
+        mesh = trimesh.load(d / "model.glb", force="mesh")
+        mesh.export(d / "model.stl")
+        shutil.copy2(rdir / "model-obj.zip", d / "model-obj.zip")
+        params["remesh"] = {**p, "apply": True}
+        stats["remesh_applied"] = True
+    else:
+        params["remesh"] = {**p, "apply": False}
+    store.update_asset(aid, params=params, stats=stats)
+    if p.get("apply"):
+        _requeue_rig_after_retexture(aid)
+    return rep
+
+
+def revert_remesh(aid: str):
+    """Kembalikan model asli (sebelum remesh) sebagai model utama."""
+    import shutil
+
+    import trimesh
+
+    d = asset_dir(aid)
+    orig = d / "model_original.glb"
+    if not orig.exists():
+        return False
+    shutil.move(orig, d / "model.glb")
+    mesh = trimesh.load(d / "model.glb", force="mesh")
+    mesh.export(d / "model.stl")
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mesh.export(Path(tmp) / "model.obj")
+        _zip(sorted(Path(tmp).iterdir()), d / "model-obj.zip")
+    a = store.get_asset(aid)
+    params, stats = dict(a["params"]), dict(a["stats"] or {})
+    if params.get("remesh"):
+        params["remesh"]["apply"] = False
+    stats.pop("remesh_applied", None)
+    store.update_asset(aid, params=params, stats=stats)
+    _requeue_rig_after_retexture(aid)
+    wake()
+    return True
 
 
 def requeue_rig(aid: str) -> dict | None:
@@ -222,7 +311,7 @@ def run_rig(job: dict):
     return {"warnings": report.get("warnings", []), "animations": report.get("animations", [])}
 
 
-HANDLERS = {"text_to_image": run_text_to_image, "image_to_3d": run_image_to_3d, "rig_prepare": run_rig_prepare, "rig": run_rig}
+HANDLERS = {"text_to_image": run_text_to_image, "image_to_3d": run_image_to_3d, "remesh": run_remesh, "rig_prepare": run_rig_prepare, "rig": run_rig}
 
 
 def _fail(job: dict, err: Exception):
@@ -236,7 +325,7 @@ def _fail(job: dict, err: Exception):
                 if j["status"] == "queued":
                     store.update_job(j["id"], status="error", message="Dibatalkan: gambar gagal dibuat",
                                      finished=time.time())
-    else:
+    elif job["kind"] in ("rig", "rig_prepare"):
         store.update_asset(job["asset_id"], rig_status="error")
 
 

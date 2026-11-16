@@ -19,7 +19,7 @@ const VIEWS = [
   { k: "left", label: "Samping kiri" },
   { k: "right", label: "Samping kanan" },
 ];
-const KIND_LABEL = { text_to_image: "Teks → gambar (Google Flow)", image_to_3d: "Gambar → 3D", rig_prepare: "Menyiapkan rig", rig: "Rigging & animasi" };
+const KIND_LABEL = { remesh: "Remesh", text_to_image: "Teks → gambar (Google Flow)", image_to_3d: "Gambar → 3D", rig_prepare: "Menyiapkan rig", rig: "Rigging & animasi" };
 
 const state = { assets: [], current: null, tab: "model", pollTimer: null, markers: null, symmetric: true };
 
@@ -335,13 +335,52 @@ function renderModelTab() {
   const rigCta = a.status === "ready" ? `<div class="card"><h3>Karakter humanoid?</h3>
       <p class="muted small">Buat kerangka (rig) otomatis + animasi jalan, lari, lompat, melambai, idle.</p>
       <button class="btn primary wide" id="toRig">Lanjut ke rigging →</button></div>` : "";
+  const rm = s.remesh, rmJob = activeJob(["remesh"]);
+  const remeshCard = a.status === "ready" ? `<div class="card"><h3>Remesh</h3>
+      ${s.remesh_applied ? `<p class="small"><span class="badge rig">model utama = hasil remesh</span></p>` : ""}
+      ${rmJob ? progressHTML(rmJob) : `
+      <div class="field">Topologi<div class="seg" data-rm="mode"><button type="button" data-v="quad" class="on">Quad</button><button type="button" data-v="tri">Segitiga</button></div></div><p></p>
+      <div class="field">Target face<div class="seg" data-rm="target_faces"><button type="button" data-v="2000">2rb</button><button type="button" data-v="5000" class="on">5rb</button><button type="button" data-v="10000">10rb</button><button type="button" data-v="20000">20rb</button></div></div><p></p>
+      <div class="field">Tekstur<div class="seg" data-rm="texture_res"><button type="button" data-v="1024" class="on">1K</button><button type="button" data-v="2048">2K</button></div></div><p></p>
+      <label class="check"><input type="checkbox" id="rmApply"> Jadikan model utama (dipakai rig & unduhan utama)</label><p></p>
+      <button class="btn primary wide" id="rmBtn">Remesh</button>`}
+      ${rm && !rmJob ? `<p></p><dl class="stats"><dt>Hasil</dt><dd>${rm.faces.toLocaleString("id-ID")} face${rm.quads ? ` (${Math.round(100 * rm.quads / rm.faces)}% quad)` : ""}</dd><dt>Waktu</dt><dd>${rm.seconds} dtk</dd></dl>
+        <p></p><button class="btn sm wide" id="rmView">Lihat hasil remesh</button>
+        <div class="dl" style="margin-top:6px">${a.downloads.filter((d) => d.url.includes("/remesh/")).map((d) => `<a class="btn sm" href="${d.url}?download=1" download="${esc(d.name)}">⬇ ${esc(d.label)}</a>`).join("")}</div>` : ""}
+      ${s.remesh_applied && !rmJob ? `<p></p><button class="btn ghost sm wide" id="rmRevert">Kembalikan model asli</button>` : ""}
+      <p class="error" id="rmErr"></p></div>` : "";
   const viewsCard = a.status === "ready" || a.status === "error" ? `<div class="card"><h3>Foto sisi lain</h3>
       <p class="muted small">Tambahkan foto belakang/samping agar tekstur sisi itu tajam. Model dibuat ulang (±1–2 menit)${a.rig_status === "rigged" ? ", rig ikut diperbarui otomatis" : ""}.</p>
       <div class="view-slots" id="assetViews"></div><p></p>
       <button class="btn primary wide hidden" id="applyViews">Terapkan & buat ulang tekstur</button><p class="error" id="viewsErr"></p></div>` : "";
   body.innerHTML = `<div class="view-grid"><div class="viewer">${viewer}</div>
-    <div class="side-col">${stats}${downloadsHTML(a.downloads.filter((d) => !d.url.includes("/rig/")))}${rigCta}${viewsCard}${thumbs}</div></div>`;
+    <div class="side-col">${stats}${downloadsHTML(a.downloads.filter((d) => !d.url.includes("/rig/") && !d.url.includes("/remesh/")))}${remeshCard}${rigCta}${viewsCard}${thumbs}</div></div>`;
   $("#toRig")?.addEventListener("click", () => go(a.id, "rig"));
+  body.querySelectorAll("[data-rm]").forEach((seg) => seg.addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    seg.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
+  }));
+  $("#rmBtn")?.addEventListener("click", async () => {
+    const v = (n) => $(`[data-rm=${n}] button.on`, body).dataset.v;
+    $("#rmBtn").disabled = true;
+    try {
+      await api(`api/assets/${a.id}/remesh`, { method: "POST", body: JSON.stringify({ mode: v("mode"), target_faces: +v("target_faces"), texture_res: +v("texture_res"), apply: $("#rmApply").checked }) });
+      openAsset(a.id, true);
+    } catch (err) { $("#rmErr").textContent = err.message; $("#rmBtn").disabled = false; }
+  });
+  $("#rmView")?.addEventListener("click", () => {
+    const mv = $(".viewer model-viewer");
+    if (!mv) return;
+    const showing = mv.dataset.rm === "1";
+    mv.src = (showing ? f["model.glb"] : f["remesh/model.glb"]) + "?v=" + Date.now();
+    mv.dataset.rm = showing ? "" : "1";
+    $("#rmView").textContent = showing ? "Lihat hasil remesh" : "Lihat model utama";
+  });
+  $("#rmRevert")?.addEventListener("click", async () => {
+    if (!confirm("Kembalikan model asli sebagai model utama?")) return;
+    try { await api(`api/assets/${a.id}/remesh/revert`, { method: "POST" }); openAsset(a.id, true); }
+    catch (err) { $("#rmErr").textContent = err.message; }
+  });
   if ($("#assetViews")) {
     const existing = Object.fromEntries(VIEWS.filter(({ k }) => f[`view_${k}.png`]).map(({ k }) => [k, f[`view_${k}.png`] + "?v=" + a.created]));
     const asg = s.side_assignment?.side_a; // tampak samping dari turnaround AI

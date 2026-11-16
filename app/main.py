@@ -101,6 +101,8 @@ def me(request: Request):
 # ------------------------------------------------------------------ aset
 FILE_LABELS = {
     "model.glb": "Model (GLB)", "model-obj.zip": "Model (OBJ + tekstur, zip)", "model.stl": "Model (STL, cetak 3D)",
+    "remesh/model.glb": "Remesh (GLB)", "remesh/model-obj.zip": "Remesh (OBJ quad + tekstur, zip)",
+    "remesh/model.fbx": "Remesh (FBX)",
     "rig/rigged.glb": "Rig + animasi (GLB)", "rig/rigged.fbx": "Rig + animasi (FBX, Unity/Unreal)",
 }
 
@@ -110,7 +112,8 @@ def asset_view(a: dict, with_jobs=False) -> dict:
     files = {k: f"files/{a['id']}/{k}" for k in
              ["input.png", "input.jpg", "input.webp", "cutout.png", "thumb.png",
               *[f"view_{v}.png" for v in VIEWS], *[f"cutout_{v}.png" for v in VIEWS],
-              "sheet.png", "view_side_a.png", "view_side_b.png", "model.glb", "model-obj.zip",
+              "sheet.png", "view_side_a.png", "view_side_b.png", "model_original.glb",
+              "remesh/model.glb", "remesh/model-obj.zip", "remesh/model.fbx", "remesh/thumb.png", "model.glb", "model-obj.zip",
               "model.stl", "rig/front.png", "rig/thumb.png", "rig/rigged.glb", "rig/rigged.fbx"]
              if (d / k).exists()}
     a = {**a, "files": files,
@@ -387,6 +390,37 @@ def delete_animation(aid: str, name: str):
     job = worker.requeue_rig(aid) if a["rig_status"] == "rigged" and not any(
         j["asset_id"] == aid for j in store.active_jobs()) else None
     return {"ok": True, "job": job}
+
+
+class RemeshBody(BaseModel):
+    mode: str = Field("quad", pattern="^(quad|tri)$")
+    target_faces: int = Field(8000, ge=500, le=200000)
+    texture_res: int = 1024
+    apply: bool = False
+
+
+@app.post("/api/assets/{aid}/remesh", dependencies=[Depends(require_auth)])
+def remesh(aid: str, body: RemeshBody):
+    a = _asset_or_404(aid)
+    if a["status"] != "ready":
+        raise HTTPException(409, "Model 3D belum selesai dibuat")
+    if any(j["asset_id"] == aid for j in store.active_jobs()):
+        raise HTTPException(409, "Aset sedang diproses, tunggu sampai selesai")
+    params = body.model_dump()
+    params["texture_res"] = params["texture_res"] if params["texture_res"] in (1024, 2048) else 1024
+    job = store.create_job(aid, "remesh", params)
+    worker.wake()
+    return job
+
+
+@app.post("/api/assets/{aid}/remesh/revert", dependencies=[Depends(require_auth)])
+def remesh_revert(aid: str):
+    _asset_or_404(aid)
+    if any(j["asset_id"] == aid for j in store.active_jobs()):
+        raise HTTPException(409, "Aset sedang diproses, tunggu sampai selesai")
+    if not worker.revert_remesh(aid):
+        raise HTTPException(409, "Model asli tidak ada (remesh belum dijadikan model utama)")
+    return asset_view(store.get_asset(aid))
 
 
 @app.get("/api/jobs/{jid}", dependencies=[Depends(require_auth)])
