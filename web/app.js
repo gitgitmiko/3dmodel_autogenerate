@@ -19,7 +19,7 @@ const VIEWS = [
   { k: "left", label: "Samping kiri" },
   { k: "right", label: "Samping kanan" },
 ];
-const KIND_LABEL = { image_to_3d: "Gambar → 3D", rig_prepare: "Menyiapkan rig", rig: "Rigging & animasi" };
+const KIND_LABEL = { text_to_image: "Teks → gambar (Google Flow)", image_to_3d: "Gambar → 3D", rig_prepare: "Menyiapkan rig", rig: "Rigging & animasi" };
 
 const state = { assets: [], current: null, tab: "model", pollTimer: null, markers: null, symmetric: true };
 
@@ -150,6 +150,31 @@ function renderNew() {
   ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
   drop.addEventListener("drop", (e) => setFile(e.dataTransfer.files[0]));
   window.onpaste = (e) => { const f = [...(e.clipboardData?.files || [])][0]; if (f && $("#drop")) setFile(f); };
+  // tab gambar / teks
+  const setMode = (mode) => {
+    main.querySelectorAll("#newTabs button").forEach((b) => b.classList.toggle("on", b.dataset.mode === mode));
+    $("#newForm").classList.toggle("hidden", mode !== "image");
+    $("#textForm").classList.toggle("hidden", mode !== "text");
+    $("#newHint").textContent = mode === "text"
+      ? "Tulis deskripsi objek atau karakter (bahasa Indonesia/Inggris). Google Flow membuat gambarnya, lalu gambar diproses jadi 3D bertekstur."
+      : "Unggah satu gambar objek atau karakter. Hasil terbaik: satu objek, tampak depan, latar polos, karakter dengan lengan & kaki sedikit terbuka (pose A/T).";
+    try { localStorage.setItem("g3d-mode", mode); } catch { /* abaikan */ }
+  };
+  main.querySelectorAll("#newTabs button").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
+  let saved = "image"; try { saved = localStorage.getItem("g3d-mode") || "image"; } catch { /* abaikan */ }
+  setMode(saved);
+  $("#tPrompt").addEventListener("input", () => { $("#tSubmit").disabled = $("#tPrompt").value.trim().length < 3; });
+  $("#textForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const tf = $("#textForm");
+    const val = (n) => $(`.seg[data-name=${n}] button.on`, tf).dataset.v;
+    const body = { prompt: $("#tPrompt").value.trim(), name: $("#tName").value, kind: val("kind"), style: val("style"),
+      turnaround: $("#tTurn").checked, resolution: +val("resolution"), target_faces: +val("target_faces"),
+      texture_res: +val("texture_res"), auto_rig: $("#tAutoRig").checked };
+    $("#tSubmit").disabled = true; $("#tSubmit").textContent = "Mengirim…";
+    try { const r = await api("api/assets/text", { method: "POST", body: JSON.stringify(body) }); await refreshList(); go(r.asset.id); }
+    catch (err) { $("#tErr").textContent = err.message; $("#tSubmit").disabled = false; $("#tSubmit").textContent = "Buat dari teks"; }
+  });
   main.querySelectorAll(".seg").forEach((seg) => seg.addEventListener("click", (e) => {
     const b = e.target.closest("button"); if (!b) return;
     seg.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
@@ -161,7 +186,7 @@ function renderNew() {
     fd.append("image", file);
     for (const [k, f] of Object.entries(views.files)) fd.append(`image_${k}`, f);
     fd.append("name", $("#name").value);
-    main.querySelectorAll(".seg").forEach((seg) => fd.append(seg.dataset.name, $("button.on", seg).dataset.v));
+    $("#newForm").querySelectorAll(".seg").forEach((seg) => fd.append(seg.dataset.name, $("button.on", seg).dataset.v));
     fd.append("remove_bg", $("#removeBg").checked);
     fd.append("auto_rig", $("#autoRig").checked);
     $("#submitBtn").disabled = true;
@@ -221,7 +246,10 @@ function renderAssetShell() {
 }
 
 function latest(kind) { return state.current.jobs.find((j) => j.kind === kind); }
-function activeJob(kinds) { return state.current.jobs.find((j) => kinds.includes(j.kind) && ["queued", "running"].includes(j.status)); }
+function activeJob(kinds) {
+  const act = state.current.jobs.filter((j) => kinds.includes(j.kind) && ["queued", "running"].includes(j.status));
+  return act.find((j) => j.status === "running") || act[act.length - 1]; // yang berjalan, atau antrean terdepan
+}
 
 function progressHTML(job) {
   const pct = Math.round((job.progress || 0) * 100);
@@ -254,9 +282,13 @@ function renderTab() {
 
 function renderModelTab() {
   const a = state.current, body = $("#tabBody");
-  const job = latest("image_to_3d");
+  const job = activeJob(["text_to_image", "image_to_3d"])
+    || [latest("text_to_image"), latest("image_to_3d")].find((j) => j?.status === "error" && !j.message.startsWith("Dibatalkan"))
+    || latest("image_to_3d");
   const f = a.files;
-  const thumbs = `<div class="card"><h3>Gambar sumber</h3><div class="thumbs">
+  const promptCard = a.params.prompt ? `<div class="card"><h3>Deskripsi</h3><div class="prompt-box">${esc(a.params.prompt)}</div>
+      ${f["sheet.png"] ? `<p></p><a href="${f["sheet.png"]}" target="_blank"><img src="${f["sheet.png"]}" alt="Turnaround" style="width:100%;border-radius:8px"></a>` : ""}</div>` : "";
+  const thumbs = promptCard + `<div class="card"><h3>Gambar sumber</h3><div class="thumbs">
       ${f["input.png"] ? `<figure><img src="${f["input.png"]}" alt=""><figcaption>Asli</figcaption></figure>` : ""}
       ${f["cutout.png"] ? `<figure><img src="${f["cutout.png"]}" alt=""><figcaption>Tanpa background</figcaption></figure>` : ""}
     </div></div>`;
@@ -289,6 +321,12 @@ function renderModelTab() {
   $("#toRig")?.addEventListener("click", () => go(a.id, "rig"));
   if ($("#assetViews")) {
     const existing = Object.fromEntries(VIEWS.filter(({ k }) => f[`view_${k}.png`]).map(({ k }) => [k, f[`view_${k}.png`] + "?v=" + a.created]));
+    const asg = s.side_assignment?.side_a; // tampak samping dari turnaround AI
+    if (asg) {
+      const other = asg === "left" ? "right" : "left";
+      if (!existing[asg] && f["view_side_a.png"]) existing[asg] = f["view_side_a.png"];
+      if (!existing[other] && f["view_side_b.png"]) existing[other] = f["view_side_b.png"];
+    }
     const vs = mountViewSlots($("#assetViews"), { existing, status: s.texture_views || {},
       onChange: (st) => $("#applyViews").classList.toggle("hidden", !Object.keys(st.files).length && !st.removed.size) });
     $("#applyViews").addEventListener("click", async () => {

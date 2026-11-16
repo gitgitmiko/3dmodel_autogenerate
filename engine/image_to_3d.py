@@ -214,6 +214,7 @@ def image_to_3d(
         "texture": int(opts.texture_res),
         "texture_projected": bool(tex_info.get("projected")),
         "texture_views": tex_info.get("views", {}),
+        "side_assignment": tex_info.get("side_assignment"),
         "seconds": round(time.time() - t0, 1),
         "bounds": mesh.bounds.round(4).tolist(),
     }

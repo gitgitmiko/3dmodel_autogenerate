@@ -9,6 +9,8 @@ Tahap 1 (sudah jalan):
 - **Texture bake**: UV atlas + tekstur 1K/2K; sisi depan memakai gambar asli sehingga detailnya tajam.
 - **Multi-view**: foto belakang / samping kiri / samping kanan (opsional) ikut ditempel ke tekstur,
   bisa ditambahkan saat unggah atau belakangan (rig diperbarui otomatis).
+- **Text → 3D**: deskripsi teks → gambar oleh Google Flow (Nano Banana) lewat
+  [gflow-cli](https://github.com/ffroliva/gflow-cli) → 3D bertekstur semua sisi.
 - **Auto-rig humanoid + animasi dasar**: kerangka 22 tulang (nama standar Mixamo), skinning otomatis,
   animasi *idle, walk, run, wave, jump*, diekspor ke GLB dan FBX (Unity/Unreal/Godot/Blender).
 
@@ -61,6 +63,24 @@ Geometri tetap dari gambar depan saja (TripoSR model satu-gambar), jadi foto sam
 memperbaiki warna, bukan bentuk. Uji arah & cermin: `scripts/make_test_views.py` membuat objek
 dengan kotak merah di punggung kiri.
 Tanpa tekstur (opsi "Vertex color"), warna vertex dikonversi sRGB→linear agar tidak pucat di glTF.
+
+### Text → 3D (`app/textgen.py`, `engine/sheet.py`)
+
+1. Deskripsi pengguna dibungkus prompt yang ramah 3D (satu objek, seluruh badan, pose A untuk karakter,
+   latar putih polos, tanpa bayangan) + preset gaya (3D kartun, realistis, chibi, anime, low poly).
+2. Mode **turnaround** (default): satu gambar 16:9 berisi 4 tampak berjajar (depan, samping, belakang,
+   samping). Karena dibuat dalam satu gambar, desainnya konsisten antar tampak. Gambar dipotong per figur
+   (rembg + komponen terhubung); figur 1 = depan (masukan TripoSR), figur 3 = belakang, figur 2 & 4 =
+   samping. Model gambar sering tertukar kiri/kanan, jadi saat bake kedua penempatan dicoba dan dipilih
+   yang siluetnya paling cocok dengan mesh.
+3. gflow mengendalikan Chrome sungguhan pada akun Google server (Xvfb `:99`, mode `classic` agar memakai
+   kuota gambar harian paket, bukan kuota agen). Profil Chrome dipakai bersama otomasi lain, jadi semua
+   pemanggil antre lewat `flock /tmp/gflow-profile.lock`. Gambar Flow tidak memakai kredit Veo.
+4. `image i2i` gflow belum mendukung frontend Flow baru (flow.google.com) untuk akun ini, sehingga
+   tampak tambahan dibuat lewat turnaround, bukan edit gambar.
+
+Bila sesi Flow kedaluwarsa, job gagal dengan pesan berisi perintah login ulang
+(`cd ~/github-repos/gflow-cli && DISPLAY=:99 .venv/bin/gflow auth login`).
 
 ### Rigging: kenapa ada penanda?
 
@@ -115,6 +135,7 @@ Semua endpoint (kecuali login) butuh cookie sesi.
 | GET | `/api/assets` | daftar aset |
 | POST | `/api/assets` (multipart: `image`, opsional `image_back`/`image_left`/`image_right`, `name`, `resolution` 128–320, `target_faces`, `texture_res` 0/1024/2048, `remove_bg`, `auto_rig`) | buat model dari gambar |
 | GET/PATCH/DELETE | `/api/assets/{id}` | detail (+ job, penanda) / ganti nama / hapus |
+| POST | `/api/assets/text` `{prompt, kind: character\|object, style, turnaround, resolution, target_faces, texture_res, auto_rig}` | teks → gambar (Google Flow) → 3D |
 | POST | `/api/assets/{id}/views` (multipart `image_back`/`image_left`/`image_right`, `remove`=daftar dipisah koma) | ganti foto sisi lain, buat ulang model + rig |
 | POST | `/api/assets/{id}/rig/prepare` `{height}` | tebak penanda + render tampak depan |
 | POST | `/api/assets/{id}/rig` `{markers, height, animations}` | buat rig + animasi |
@@ -127,7 +148,7 @@ Semua endpoint (kecuali login) butuh cookie sesi.
 - [ ] Peta normal/roughness (PBR penuh) dan perbaikan sisi belakang tekstur.
 - [x] **Multi-view tekstur** (foto belakang/samping ditempel ke tekstur).
 - [ ] Multi-view untuk **geometri** (carving siluet / model multi-view) agar bentuk samping lebih akurat.
-- [ ] **Text → 3D**: text → gambar (model difusi ringan / API eksternal) → pipeline image→3D.
+- [x] **Text → 3D** lewat Google Flow (gflow-cli) dengan turnaround 4 tampak.
 - [ ] **AI texturing / retexture** untuk mesh yang sudah ada (butuh GPU agar praktis).
 - [ ] **Remesh**: quad remesh & target poligon dari UI (Blender QuadriFlow / voxel remesh).
 - [ ] Animasi tambahan (dance, attack, sit) + retarget dari file Mixamo/BVH.

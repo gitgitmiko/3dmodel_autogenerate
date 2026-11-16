@@ -6,7 +6,7 @@
   <title>gitgit3d</title>
   <meta name="description" content="Gambar jadi model 3D, rigging otomatis, dan animasi dasar — self-hosted.">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="style.css?v=3">
+  <link rel="stylesheet" href="style.css?v=4">
   <script type="module" src="vendor/model-viewer.min.js"></script>
 </head>
 <body>
@@ -38,10 +38,66 @@
     <section class="panel">
       <header class="panel-head">
         <div>
-          <h1>Gambar ke 3D</h1>
-          <p class="muted">Unggah satu gambar objek atau karakter. Hasil terbaik: satu objek, tampak depan, latar polos, karakter dengan lengan & kaki sedikit terbuka (pose A/T).</p>
+          <h1>Buat model 3D</h1>
+          <p class="muted" id="newHint">Unggah satu gambar objek atau karakter. Hasil terbaik: satu objek, tampak depan, latar polos, karakter dengan lengan & kaki sedikit terbuka (pose A/T).</p>
         </div>
       </header>
+      <nav class="tabs" id="newTabs">
+        <button type="button" data-mode="image" class="on">Dari gambar</button>
+        <button type="button" data-mode="text">Dari teks</button>
+      </nav>
+      <form id="textForm" class="new-grid hidden">
+        <div class="card text-box">
+          <label class="field">Deskripsi
+            <textarea id="tPrompt" rows="5" maxlength="600" placeholder="mis. ksatria kartun lucu dengan jubah biru dan baju zirah perak"></textarea>
+          </label>
+          <div class="field">Jenis
+            <div class="seg" data-name="kind">
+              <button type="button" data-v="character" class="on">Karakter</button>
+              <button type="button" data-v="object">Objek</button>
+            </div>
+          </div>
+          <div class="field">Gaya
+            <div class="seg wrap" data-name="style">
+              <button type="button" data-v="stylized" class="on">3D kartun</button>
+              <button type="button" data-v="realistic">Realistis</button>
+              <button type="button" data-v="chibi">Chibi</button>
+              <button type="button" data-v="anime">Anime</button>
+              <button type="button" data-v="lowpoly">Low poly</button>
+            </div>
+          </div>
+          <label class="check"><input type="checkbox" id="tTurn" checked> Buat tampak depan, samping & belakang sekaligus (tekstur semua sisi tajam)</label>
+          <p class="muted small">Gambar dibuat oleh Google Flow (Nano Banana) memakai akun Google server lewat gflow-cli, ±1 menit; lalu diproses jadi 3D ±1–2 menit. Bila Flow sedang dipakai otomasi lain, job menunggu giliran.</p>
+        </div>
+        <div class="opts card">
+          <label class="field">Nama
+            <input type="text" id="tName" maxlength="60" placeholder="otomatis dari deskripsi">
+          </label>
+          <div class="field">Detail geometri
+            <div class="seg" data-name="resolution">
+              <button type="button" data-v="192">Cepat</button>
+              <button type="button" data-v="256" class="on">Standar</button>
+              <button type="button" data-v="320">Detail</button>
+            </div>
+          </div>
+          <div class="field">Jumlah poligon
+            <div class="seg" data-name="target_faces">
+              <button type="button" data-v="20000">20rb</button>
+              <button type="button" data-v="60000" class="on">60rb</button>
+              <button type="button" data-v="120000">120rb</button>
+            </div>
+          </div>
+          <div class="field">Tekstur
+            <div class="seg" data-name="texture_res">
+              <button type="button" data-v="1024" class="on">1K</button>
+              <button type="button" data-v="2048">2K</button>
+            </div>
+          </div>
+          <label class="check"><input type="checkbox" id="tAutoRig"> Langsung siapkan rigging (karakter)</label>
+          <button class="btn primary wide" id="tSubmit" type="submit" disabled>Buat dari teks</button>
+          <p class="error" id="tErr"></p>
+        </div>
+      </form>
       <form id="newForm" class="new-grid">
         <label class="drop" id="drop">
           <input type="file" id="file" accept="image/png,image/jpeg,image/webp" hidden>
@@ -112,6 +168,6 @@
     </section>
   </template>
 
-  <script src="app.js?v=3" type="module"></script>
+  <script src="app.js?v=5" type="module"></script>
 </body>
 </html>

@@ -54,14 +54,16 @@ def run_image_to_3d(job: dict):
         foreground_ratio=float(p.get("foreground_ratio", 0.85)),
         smooth_iters=int(p.get("smooth_iters", 5)),
         texture_res=int(p.get("texture_res", 1024)),
-        extra_views={v: d / f"view_{v}.png" for v in VIEWS if (d / f"view_{v}.png").exists()},
+        extra_views=_extra_views(d, (store.get_asset(aid)["stats"] or {}).get("side_assignment")),
     )
     store.update_asset(aid, status="processing")
 
     def progress(frac, msg):
         store.update_job(job["id"], progress=round(frac * 0.9, 3), message=msg)
 
-    src = next(d.glob("input.*"))
+    src = next(d.glob("input.*"), None)
+    if src is None:
+        raise RuntimeError("Gambar sumber belum ada (pembuatan gambar dari teks gagal).")
     res = image_to_3d(src, d, opts, progress=progress)
     _last_model_use = time.time()
 
@@ -109,6 +111,69 @@ def _requeue_rig_after_retexture(aid: str):
         store.create_job(aid, "rig_prepare", {"height": prep.get("height_m", 1.75)})
 
 
+def _extra_views(d: Path, side_assignment: dict | None = None) -> dict:
+    views = {v: d / f"view_{v}.png" for v in VIEWS if (d / f"view_{v}.png").exists()}
+    sides = {v: d / f"view_{v}.png" for v in ("side_a", "side_b") if (d / f"view_{v}.png").exists()}
+    manual = {"left", "right"} & views.keys()
+    if not manual:
+        views.update(sides)  # kiri/kanan ditentukan otomatis saat bake
+    elif side_assignment and len(manual) == 1:
+        # Pengguna mengganti satu sisi; sisi lain tetap dari turnaround sesuai penempatan sebelumnya.
+        a_side = side_assignment.get("side_a")
+        mapping = {a_side: "side_a", ("right" if a_side == "left" else "left"): "side_b"}
+        other = ({"left", "right"} - manual).pop()
+        if mapping.get(other) in sides:
+            views[other] = sides[mapping[other]]
+    return views
+
+
+def run_text_to_image(job: dict):
+    from engine.image_to_3d import _load_rembg
+    from engine.sheet import split_turnaround
+    from PIL import Image
+
+    from . import textgen
+
+    aid = job["asset_id"]
+    d = asset_dir(aid)
+    d.mkdir(parents=True, exist_ok=True)
+    p = job["params"]
+    store.update_asset(aid, status="processing")
+    prompt = textgen.build_prompt(p["prompt"], p.get("kind", "character"), p.get("style", "stylized"),
+                                  bool(p.get("turnaround", True)))
+    (d / "prompt.txt").write_text(prompt)
+
+    def msg(m, frac=0.2):
+        store.update_job(job["id"], message=m, progress=frac)
+
+    msg("Menyiapkan Google Flow", 0.05)
+    src = textgen.generate(prompt, d / "gen", "16:9" if p.get("turnaround", True) else "1:1",
+                           progress=lambda m: msg(m, 0.15))
+    img = Image.open(src)
+    img.load()
+    warnings = []
+    if p.get("turnaround", True):
+        img.save(d / "sheet.png")
+        msg("Memotong turnaround menjadi tampak depan/samping/belakang", 0.85)
+        figs = split_turnaround(img, session=_load_rembg())
+        if not figs:
+            raise RuntimeError("Tidak ada objek yang terdeteksi di gambar hasil Google Flow.")
+        figs[0].save(d / "input.png")
+        if len(figs) >= 4:
+            figs[1].save(d / "view_side_a.png")
+            figs[2].save(d / "view_back.png")
+            figs[3].save(d / "view_side_b.png")
+        else:
+            warnings.append(f"Turnaround hanya berisi {len(figs)} figur; hanya tampak depan yang dipakai.")
+    else:
+        img.save(d / "input.png")
+    import shutil
+
+    shutil.rmtree(d / "gen", ignore_errors=True)
+    store.update_asset(aid, status="queued")
+    return {"prompt": prompt, "warnings": warnings}
+
+
 def run_rig_prepare(job: dict):
     aid = job["asset_id"]
     d = asset_dir(aid)
@@ -146,15 +211,20 @@ def run_rig(job: dict):
     return {"warnings": report.get("warnings", []), "animations": report.get("animations", [])}
 
 
-HANDLERS = {"image_to_3d": run_image_to_3d, "rig_prepare": run_rig_prepare, "rig": run_rig}
+HANDLERS = {"text_to_image": run_text_to_image, "image_to_3d": run_image_to_3d, "rig_prepare": run_rig_prepare, "rig": run_rig}
 
 
 def _fail(job: dict, err: Exception):
     msg = str(err).strip() or err.__class__.__name__
     log.error("job %s gagal: %s\n%s", job["id"], msg, traceback.format_exc())
     store.update_job(job["id"], status="error", message=msg[:2000], finished=time.time())
-    if job["kind"] == "image_to_3d":
+    if job["kind"] in ("image_to_3d", "text_to_image"):
         store.update_asset(job["asset_id"], status="error")
+        if job["kind"] == "text_to_image":  # job lanjutan tidak ada gunanya tanpa gambar
+            for j in store.jobs_for(job["asset_id"]):
+                if j["status"] == "queued":
+                    store.update_job(j["id"], status="error", message="Dibatalkan: gambar gagal dibuat",
+                                     finished=time.time())
     else:
         store.update_asset(job["asset_id"], rig_status="error")
 

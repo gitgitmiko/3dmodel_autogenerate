@@ -109,7 +109,8 @@ def asset_view(a: dict, with_jobs=False) -> dict:
     d = worker.asset_dir(a["id"])
     files = {k: f"files/{a['id']}/{k}" for k in
              ["input.png", "input.jpg", "input.webp", "cutout.png", "thumb.png",
-              *[f"view_{v}.png" for v in VIEWS], *[f"cutout_{v}.png" for v in VIEWS], "model.glb", "model-obj.zip",
+              *[f"view_{v}.png" for v in VIEWS], *[f"cutout_{v}.png" for v in VIEWS],
+              "sheet.png", "view_side_a.png", "view_side_b.png", "model.glb", "model-obj.zip",
               "model.stl", "rig/front.png", "rig/thumb.png", "rig/rigged.glb", "rig/rigged.fbx"]
              if (d / k).exists()}
     a = {**a, "files": files,
@@ -199,6 +200,42 @@ async def create_asset(
     return {"asset": asset_view(store.get_asset(a["id"])), "job": job}
 
 
+class TextBody(BaseModel):
+    prompt: str = Field(min_length=3, max_length=600)
+    name: str = Field("", max_length=60)
+    kind: str = Field("character", pattern="^(character|object)$")
+    style: str = "stylized"
+    turnaround: bool = True
+    resolution: int = 256
+    target_faces: int = 60000
+    texture_res: int = 1024
+    auto_rig: bool = False
+
+
+@app.post("/api/assets/text", dependencies=[Depends(require_auth)])
+def create_from_text(body: TextBody):
+    """Teks -> gambar (Google Flow via gflow) -> 3D. Dengan turnaround, tampak samping/belakang ikut dibuat."""
+    from .textgen import STYLES
+
+    params = {
+        "resolution": max(128, min(320, body.resolution)),
+        "target_faces": 0 if body.target_faces <= 0 else max(5000, min(200000, body.target_faces)),
+        "texture_res": body.texture_res if body.texture_res in (1024, 2048) else 1024,
+        "remove_bg": True, "auto_rig": body.auto_rig and body.kind == "character",
+        "source": "text", "prompt": body.prompt.strip(), "kind": body.kind,
+        "style": body.style if body.style in STYLES else "stylized", "turnaround": body.turnaround,
+    }
+    name = body.name.strip() or " ".join(body.prompt.split()[:4])[:60]
+    a = store.create_asset(name, params)
+    worker.asset_dir(a["id"]).mkdir(parents=True, exist_ok=True)
+    job = store.create_job(a["id"], "text_to_image", params)
+    store.create_job(a["id"], "image_to_3d", params)
+    if params["auto_rig"]:
+        store.create_job(a["id"], "rig_prepare", {"height": 1.75})
+    worker.wake()
+    return {"asset": asset_view(store.get_asset(a["id"])), "job": job}
+
+
 @app.post("/api/assets/{aid}/views", dependencies=[Depends(require_auth)])
 async def set_views(
     aid: str,
@@ -213,9 +250,14 @@ async def set_views(
         raise HTTPException(409, "Aset sedang diproses, tunggu sampai selesai")
     views = await _collect_views(image_back=image_back, image_left=image_left, image_right=image_right)
     d = worker.asset_dir(aid)
+    assign = (a.get("stats") or {}).get("side_assignment") or {}
+    a_side = assign.get("side_a")
+    side_file = {a_side: "side_a", ("right" if a_side == "left" else "left"): "side_b"} if a_side else {}
     for v in [x for x in remove.split(",") if x in VIEWS]:
         (d / f"view_{v}.png").unlink(missing_ok=True)
         (d / f"cutout_{v}.png").unlink(missing_ok=True)
+        if v in side_file:  # sisi yang berasal dari turnaround
+            (d / f"view_{side_file[v]}.png").unlink(missing_ok=True)
     for v, vimg in views.items():
         vimg.save(d / f"view_{v}.png")
     params = dict(a["params"])

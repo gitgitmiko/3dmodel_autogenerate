@@ -207,8 +207,18 @@ def project_views(base: np.ndarray, pos: np.ndarray, normals: np.ndarray, views:
     den = np.zeros(len(base), dtype=np.float32)
     cover = np.zeros(len(base), dtype=np.float32)
     infos = {}
-    for view, img in views.items():
-        col, w, info = _view_weights(pos, normals, img, view)
+    results = {v: _view_weights(pos, normals, img, v) for v, img in views.items() if v in VIEW_AZIMUTH}
+    # Dua tampak samping tanpa label pasti (mis. dari turnaround sheet AI yang sering tertukar kiri/kanan):
+    # coba kedua penempatan dan pakai yang siluetnya paling cocok dengan mesh.
+    if "side_a" in views and "side_b" in views:
+        opt1 = (_view_weights(pos, normals, views["side_a"], "left"), _view_weights(pos, normals, views["side_b"], "right"))
+        opt2 = (_view_weights(pos, normals, views["side_a"], "right"), _view_weights(pos, normals, views["side_b"], "left"))
+        score = lambda o: o[0][2]["iou"] + o[1][2]["iou"]
+        best = opt1 if score(opt1) >= score(opt2) else opt2
+        results["left"], results["right"] = (best[0], best[1]) if best is opt1 else (best[1], best[0])
+        infos["side_assignment"] = {"side_a": "left" if best is opt1 else "right",
+                                    "iou_sum": [round(score(opt1), 3), round(score(opt2), 3)]}
+    for view, (col, w, info) in results.items():
         infos[view] = info
         if col is None:
             continue
@@ -218,7 +228,9 @@ def project_views(base: np.ndarray, pos: np.ndarray, normals: np.ndarray, views:
         cover = np.maximum(cover, w)
     proj = num / np.maximum(den, 1e-6)[:, None]
     out = base * (1 - cover[:, None]) + proj * cover[:, None]
-    return out, {"projected": any(i.get("used") for i in infos.values()), "views": infos}
+    used = any(isinstance(i, dict) and i.get("used") for i in infos.values())
+    return out, {"projected": used, "views": {k: v for k, v in infos.items() if k in VIEW_AZIMUTH},
+                 **({"side_assignment": infos["side_assignment"]} if "side_assignment" in infos else {})}
 
 
 def bake_texture(mesh: trimesh.Trimesh, model, scene_code: torch.Tensor, tex_res: int = 1024,
